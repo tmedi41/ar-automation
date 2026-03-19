@@ -1,0 +1,23 @@
+# Credentials – never commit these
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Local tool settings
+.claude/
+
+# Generated output (optional – remove lines if you want these tracked)
+exports/
+database/
+reports/
+data/

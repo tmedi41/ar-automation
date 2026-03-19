@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AR Collections Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header class="page-header">
+  <div class="header-left">
+    <div class="header-title">AR Collections</div>
+    <div class="header-sub">Working Solutions Inc.{% if metrics.generated %} &mdash; {{ metrics.generated }}{% endif %}</div>
+  </div>
+  <button class="btn-run" id="btn-run">&#9654; Run Automation</button>
+</header>
+
+<!-- ── Nav Tabs ──────────────────────────────────────────────────────────── -->
+<nav class="nav-tabs">
+  <button class="nav-tab active" data-tab="overview">Overview</button>
+  <button class="nav-tab" data-tab="upload">Upload AR Export</button>
+  <button class="nav-tab" data-tab="replies">Customer Replies</button>
+  <button class="nav-tab" data-tab="weekly">Weekly Report</button>
+  <button class="nav-tab" data-tab="payment">Payment History</button>
+</nav>
+
+<!-- ── Main ─────────────────────────────────────────────────────────────── -->
+<main class="main">
+
+  <!-- ── Overview tab ──────────────────────────────────────────────────── -->
+  <div id="panel-overview" class="tab-panel active">
+
+    <!-- Metric cards -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Total Open AR</div>
+        <div class="metric-value">{{ metrics.total_open_ar }}</div>
+        <div class="metric-sub">All outstanding balances</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Past Due</div>
+        <div class="metric-value danger">{{ metrics.total_past_due }}</div>
+        <div class="metric-sub">{{ metrics.customers_past_due }} customer{{ 's' if metrics.customers_past_due != 1 else '' }}</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Payments This Week</div>
+        <div class="metric-value payments-value">{{ metrics.payments_this_week }}</div>
+        <div class="metric-sub">Invoices cleared (last 7 days)</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Contacts This Week</div>
+        <div class="metric-value">{{ metrics.drafts_this_week }}</div>
+        <div class="metric-sub">Email drafts sent (last 7 days)</div>
+      </div>
+    </div>
+
+    <!-- Two-column: priority customers (left, wider) + replies (right) -->
+    <div class="two-col">
+
+      <!-- Priority customers -->
+      <div class="card" style="margin-bottom:0">
+        <div class="card-header">
+          <div class="section-title">Priority Customers</div>
+        </div>
+        {% if priority %}
+        <table class="priority-table">
+          <tbody>
+            {% for row in priority %}
+            <tr>
+              <td class="priority-index">{{ loop.index }}</td>
+              <td class="priority-customer-cell">
+                <div class="customer-name">{{ row.customer }}</div>
+                <div class="customer-sub">
+                  {{ row.invoices }} invoice{{ 's' if row.invoices != 1 else '' }}{% if row.max_dpd > 0 %} &bull; {{ row.max_dpd }}d past due{% endif %}
+                </div>
+              </td>
+              <td class="priority-right-cell">
+                <span class="balance-cell {% if row.max_dpd > 0 %}past-due{% else %}current{% endif %}">
+                  {{ row.balance }}
+                </span>
+                <div style="margin-top:4px">
+                  {% if row.type == 'ESCALATION' %}
+                    <span class="badge badge-escalation">Escalation</span>
+                  {% elif row.type == 'PAST_DUE' %}
+                    <span class="badge badge-past-due">Past Due</span>
+                  {% elif row.type == 'PRE_DUE' %}
+                    <span class="badge badge-pre-due">Pre-Due</span>
+                  {% else %}
+                    <span style="color:#888780; font-size:12px">&mdash;</span>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+          <p style="color:#888780; font-size:13px">No data available. Run automation to generate.</p>
+        {% endif %}
+      </div>
+
+      <!-- Customer Replies & Notes -->
+      <div class="card" style="margin-bottom:0">
+        <div class="card-header">
+          <div class="section-title">Customer Replies &amp; Notes</div>
+        </div>
+        {% if replies %}
+          <div class="replies-list">
+            {% for r in replies %}
+            <div class="reply-item">
+              <div class="reply-meta">
+                <span class="reply-customer">{{ r.customer }}</span>
+                {% if r.invoice %}
+                  <span class="reply-invoice">inv {{ r.invoice }}</span>
+                {% endif %}
+                <span class="reply-date">{{ r.date }}</span>
+              </div>
+              <div class="reply-notes">{{ r.notes }}</div>
+            </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p style="color:#888780; font-size:13px">No replies logged yet.</p>
+        {% endif %}
+      </div>
+
+    </div>
+
+  </div><!-- /panel-overview -->
+
+
+  <!-- ── Upload AR Export tab ───────────────────────────────────────────── -->
+  <div id="panel-upload" class="tab-panel">
+    <div class="upload-container">
+      <div class="card">
+        <div class="card-header">
+          <div class="section-title">Upload AR Export</div>
+        </div>
+        <p class="upload-desc">Upload your QuickBooks AR Aging Detail CSV. This will replace <code>exports/ar_aging.csv</code>.</p>
+
+        <div class="upload-zone" id="upload-zone">
+          <div class="upload-icon">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#B4B2A9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="16 16 12 12 8 16"></polyline>
+              <line x1="12" y1="12" x2="12" y2="21"></line>
+              <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path>
+            </svg>
+          </div>
+          <div class="upload-label">Drop your CSV here, or <span class="upload-browse">browse</span></div>
+          <div class="upload-hint">Accepts .csv files only</div>
+          <input type="file" id="file-input" accept=".csv" style="display:none" />
+        </div>
+
+        <div id="upload-file-preview" class="upload-file-preview" style="display:none">
+          <span class="upload-file-icon">&#128196;</span>
+          <span id="upload-file-name" class="upload-file-name"></span>
+          <button class="upload-clear-btn" id="upload-clear">&#10005;</button>
+        </div>
+
+        <div class="upload-actions" id="upload-actions" style="display:none">
+          <button class="btn-primary" id="btn-upload">Upload File</button>
+        </div>
+
+        <div id="upload-status"></div>
+      </div>
+    </div>
+  </div><!-- /panel-upload -->
+
+
+  <!-- ── Customer Replies tab ───────────────────────────────────────────── -->
+  <div id="panel-replies" class="tab-panel">
+    <div class="reply-form-container">
+
+      <div class="card">
+        <div class="card-header">
+          <div class="section-title">Log Customer Reply</div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="reply-customer">Customer Name</label>
+            <input type="text" class="form-input" id="reply-customer" placeholder="e.g. NOV XL Systems" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="reply-invoice">Invoice Number</label>
+            <input type="text" class="form-input" id="reply-invoice" placeholder="e.g. 136314" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="reply-text">Customer Reply</label>
+          <textarea class="form-textarea" id="reply-text" placeholder="Paste the customer's reply or note here…"></textarea>
+        </div>
+
+        <button class="btn-primary" id="btn-generate">Generate Summary</button>
+      </div>
+
+      <!-- Summary preview (shown after API call) -->
+      <div class="card summary-card" id="summary-card" style="display:none">
+        <div class="card-header">
+          <div class="section-title">AI Summary</div>
+        </div>
+        <p class="summary-text" id="summary-text"></p>
+        <div class="summary-actions">
+          <button class="btn-secondary" id="btn-redo">Regenerate</button>
+          <button class="btn-save" id="btn-save">&#10003; Save to Log</button>
+        </div>
+      </div>
+
+      <div id="reply-status"></div>
+
+    </div>
+
+    <!-- Logged Replies list -->
+    <div class="card" style="margin-top:20px">
+      <div class="card-header">
+        <div class="section-title">Logged Replies</div>
+      </div>
+      {% if replies %}
+      <div class="logged-replies-list">
+        {% for r in replies %}
+        <div class="logged-reply-item" id="logged-reply-{{ loop.index }}">
+          <div class="logged-reply-meta">
+            <span class="reply-customer">{{ r.customer }}</span>
+            {% if r.invoice %}<span class="reply-invoice">inv {{ r.invoice }}</span>{% endif %}
+            <span class="reply-date">{{ r.date }}</span>
+          </div>
+          <div class="logged-reply-body">
+            <span class="reply-notes">{{ r.notes }}</span>
+            <button class="btn-delete-reply"
+              data-raw-date="{{ r.raw_date }}"
+              data-invoice="{{ r.invoice }}"
+              data-customer="{{ r.customer }}"
+              data-notes="{{ r.notes }}"
+              title="Delete this entry">&#10005;</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+        <p style="color:#888780; font-size:13px">No replies logged yet.</p>
+      {% endif %}
+    </div>
+
+  </div><!-- /panel-replies -->
+
+
+  <!-- ── Weekly Report tab ──────────────────────────────────────────────── -->
+  <div id="panel-weekly" class="tab-panel">
+
+    {% if weekly_data.week_of %}
+
+    <!-- Page header -->
+    <div class="weekly-page-header">
+      <div>
+        <div class="weekly-title">Weekly Collections Update</div>
+        <div class="weekly-subtitle">{{ weekly_data.week_of }}{% if weekly_data.generated %} &nbsp;&middot;&nbsp; Generated {{ weekly_data.generated }}{% endif %}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+        <button class="btn-run" id="btn-send-scott">&#9993; Send Report</button>
+        <div id="send-report-status" style="font-size:12px"></div>
+      </div>
+    </div>
+
+    <!-- Summary metric cards -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Total Contacts</div>
+        <div class="metric-value">{{ weekly_data.total_contacts }}</div>
+        <div class="metric-sub">Customers reached this week</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Pre-Due Reminders</div>
+        <div class="metric-value">{{ weekly_data.pre_due }}</div>
+        <div class="metric-sub">Upcoming invoices</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Past-Due Notices</div>
+        <div class="metric-value danger">{{ weekly_data.past_due_notices }}</div>
+        <div class="metric-sub">Overdue follow-ups</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Escalations</div>
+        <div class="metric-value danger">{{ weekly_data.escalations }}</div>
+        <div class="metric-sub">High priority accounts</div>
+      </div>
+    </div>
+
+    <!-- Customer Replies & Notes table (live from customer_interactions.csv) -->
+    <div class="card">
+      <div class="card-header">
+        <div class="section-title">Customer Replies &amp; Notes</div>
+      </div>
+      {% if customer_replies %}
+      <table class="weekly-replies-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Invoice</th>
+            <th>Customer</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in customer_replies %}
+          <tr>
+            <td class="wr-date">{{ r.date }}</td>
+            <td class="wr-invoice">{{ r.invoice }}</td>
+            <td class="wr-customer">{{ r.customer }}</td>
+            <td class="wr-notes">{{ r.notes }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p style="color:#888780; font-size:13px">No replies logged yet.</p>
+      {% endif %}
+    </div>
+
+    <!-- Past Due Accounts -->
+    <div class="card">
+      <div class="card-header">
+        <div class="section-title">Past Due Accounts</div>
+      </div>
+      {% if weekly_data.past_due_accounts %}
+        {% for acct in weekly_data.past_due_accounts %}
+        <div class="pda-row">
+          <div class="pda-main">
+            <div class="pda-left">
+              <div class="pda-rank">{{ acct.rank }}</div>
+              <div>
+                <div class="pda-customer">{{ acct.customer }}</div>
+                <div class="pda-invoices">
+                  {% for inv in acct.invoices %}
+                    <span class="pda-inv-item">{{ inv.number }} &middot; {{ inv.amount }} &middot; {{ inv.days }}d</span>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+            <div class="pda-right">
+              <div class="pda-balance">{{ acct.total }}</div>
+              <div class="pda-dpd">{{ acct.days_past_due }}d past due</div>
+            </div>
+          </div>
+          <div class="pda-update">Last Update: {{ acct.last_update }}</div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <p style="color:#888780; font-size:13px">No past due accounts.</p>
+      {% endif %}
+    </div>
+
+    {% else %}
+    <div class="card placeholder-card">
+      <div class="placeholder-text">No weekly report found. Run automation to generate one.</div>
+    </div>
+    {% endif %}
+
+  </div><!-- /panel-weekly -->
+
+  <script>
+    const WEEKLY_RAW = {{ weekly | tojson }};
+    const WEEKLY_WEEK_OF = {{ (weekly_data.week_of or '') | tojson }};
+  </script>
+
+
+  <!-- ── Payment History tab ───────────────────────────────────────────── -->
+  <div id="panel-payment" class="tab-panel">
+    <div class="card placeholder-card">
+      <div class="placeholder-text">Payment History — coming soon</div>
+    </div>
+  </div><!-- /panel-payment -->
+
+</main>
+
+<!-- ── Run modal ────────────────────────────────────────────────────────── -->
+<div id="run-overlay">
+  <div class="run-modal">
+    <h2 id="modal-title">Running Automation…</h2>
+    <p id="modal-msg"></p>
+    <div class="run-output" id="run-output"></div>
+    <div class="run-modal-footer">
+      <button class="btn-secondary" id="btn-close">Close</button>
+      <button class="btn-run" id="btn-refresh" style="display:none">&#8635; Refresh Page</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toast ─────────────────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
