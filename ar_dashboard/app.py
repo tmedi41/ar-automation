@@ -31,7 +31,10 @@ def _read_csv(rel_path: str) -> pd.DataFrame:
     path = os.path.join(BASE_DIR, rel_path)
     if not os.path.exists(path):
         return pd.DataFrame()
-    return pd.read_csv(path, dtype=str)
+    try:
+        return pd.read_csv(path, dtype=str)
+    except Exception:
+        return pd.DataFrame()
 
 
 def get_metrics() -> dict:
@@ -73,19 +76,24 @@ def get_metrics() -> dict:
         has_customer = log["Customer"].fillna("").str.strip().ne("")
         has_invoice  = log["Invoice"].fillna("").str.strip().ne("")
 
+        # Use Timestamp comparisons — .dt.date returns None for NaT rows, which
+        # raises TypeError when compared with datetime.date in Python 3.
+        week_start_ts = pd.Timestamp(week_start)
+        tomorrow_ts   = pd.Timestamp(today + timedelta(days=1))
+
         paid_mask = (
             (log["Status"].fillna("") == "Paid")
             & log["_paid_dt"].notna()
-            & (log["_paid_dt"].dt.date >= week_start)
-            & (log["_paid_dt"].dt.date <= today)
+            & (log["_paid_dt"] >= week_start_ts)
+            & (log["_paid_dt"] < tomorrow_ts)
             & has_customer & has_invoice
         )
         metrics["payments_this_week"] = int(paid_mask.sum())
 
         sent_mask = (
             log["_sent_dt"].notna()
-            & (log["_sent_dt"].dt.date >= week_start)
-            & (log["_sent_dt"].dt.date <= today)
+            & (log["_sent_dt"] >= week_start_ts)
+            & (log["_sent_dt"] < tomorrow_ts)
             & has_customer
         )
         metrics["drafts_this_week"] = int(sent_mask.sum())
