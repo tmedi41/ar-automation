@@ -363,6 +363,7 @@ def upload_ar():
     if not f.filename.lower().endswith(".csv"):
         return jsonify({"ok": False, "error": "File must be a .csv"})
     dest = os.path.join(BASE_DIR, "exports", "ar_aging.csv")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
     f.save(dest)
     return jsonify({"ok": True})
 
@@ -423,6 +424,7 @@ def log_reply():
     else:
         updated = new_row
 
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     updated.to_csv(csv_path, index=False)
     return jsonify({"ok": True})
 
