@@ -5,3 +5,4 @@ msal
 requests
 python-dotenv
 anthropic
+psycopg2-binary

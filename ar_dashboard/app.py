@@ -15,6 +15,8 @@ import msal
 import requests as http_requests
 import anthropic
 import pandas as pd
+import psycopg2
+import psycopg2.extras
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 
@@ -23,6 +25,149 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 
 app = Flask(__name__)
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+
+# ── Postgres helpers ──────────────────────────────────────────────────────────
+
+def get_db_conn():
+    """Return a psycopg2 connection, or None if DATABASE_URL is not set."""
+    if not DATABASE_URL:
+        return None
+    url = DATABASE_URL
+    # Railway uses postgres:// but psycopg2 requires postgresql://
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    return psycopg2.connect(url)
+
+
+def init_db():
+    """Create Postgres tables if absent, then restore ar_aging.csv to disk."""
+    conn = get_db_conn()
+    if conn is None:
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS customer_interactions (
+                        id         SERIAL PRIMARY KEY,
+                        date       TEXT NOT NULL DEFAULT '',
+                        customer   TEXT NOT NULL DEFAULT '',
+                        invoice    TEXT NOT NULL DEFAULT '',
+                        type       TEXT NOT NULL DEFAULT 'Customer Reply',
+                        notes      TEXT NOT NULL DEFAULT '',
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS stored_files (
+                        key        TEXT PRIMARY KEY,
+                        content    TEXT NOT NULL,
+                        updated_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+
+        # Restore ar_aging.csv from Postgres so automation scripts can find it
+        with conn.cursor() as cur:
+            cur.execute("SELECT content FROM stored_files WHERE key = 'ar_aging'")
+            row = cur.fetchone()
+            if row:
+                dest = os.path.join(BASE_DIR, "exports", "ar_aging.csv")
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "w", encoding="utf-8") as fh:
+                    fh.write(row[0])
+    finally:
+        conn.close()
+
+
+# ── Interactions data abstraction ─────────────────────────────────────────────
+
+def _get_interactions_df() -> pd.DataFrame:
+    """Return customer_interactions as a DataFrame from Postgres or CSV fallback."""
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT date, customer, invoice, type, notes "
+                    "FROM customer_interactions ORDER BY date DESC, id DESC"
+                )
+                rows = cur.fetchall()
+            if not rows:
+                return pd.DataFrame(columns=["Date", "Customer", "Invoice", "Type", "Notes"])
+            return pd.DataFrame(rows, columns=["Date", "Customer", "Invoice", "Type", "Notes"]).fillna("")
+        finally:
+            conn.close()
+    # Local dev fallback — read from CSV
+    return _read_csv("data/customer_interactions.csv")
+
+
+def _append_interaction(date: str, customer: str, invoice: str, type_: str, notes: str):
+    """Insert a new interaction row into Postgres or the CSV fallback."""
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO customer_interactions (date, customer, invoice, type, notes) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (date, customer, invoice, type_, notes),
+                    )
+        finally:
+            conn.close()
+        return
+
+    # CSV fallback
+    csv_path = os.path.join(BASE_DIR, "data", "customer_interactions.csv")
+    new_row = pd.DataFrame([{
+        "Date": date, "Customer": customer,
+        "Invoice": invoice, "Type": type_, "Notes": notes,
+    }])
+    if os.path.exists(csv_path):
+        existing = pd.read_csv(csv_path, dtype=str)
+        updated  = pd.concat([existing, new_row], ignore_index=True)
+    else:
+        updated = new_row
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    updated.to_csv(csv_path, index=False)
+
+
+def _delete_interaction(raw_date: str, invoice: str, customer: str, notes: str) -> bool:
+    """Delete a matching interaction. Returns True if a row was removed."""
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM customer_interactions "
+                        "WHERE date=%s AND invoice=%s AND customer=%s AND notes=%s",
+                        (raw_date, invoice, customer, notes),
+                    )
+                    return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    # CSV fallback
+    csv_path = os.path.join(BASE_DIR, "data", "customer_interactions.csv")
+    if not os.path.exists(csv_path):
+        return False
+    df = pd.read_csv(csv_path, dtype=str).fillna("")
+    mask = (
+        (df["Date"].str.strip()     == raw_date) &
+        (df["Invoice"].str.strip()  == invoice)  &
+        (df["Customer"].str.strip() == customer) &
+        (df["Notes"].str.strip()    == notes)
+    )
+    idx = df.index[mask]
+    if idx.empty:
+        return False
+    df = df.drop(idx[0])
+    df.to_csv(csv_path, index=False)
+    return True
 
 
 # ── Data helpers ─────────────────────────────────────────────────────────────
@@ -124,10 +269,10 @@ def get_priority_customers() -> list[dict]:
 
 
 def get_recent_replies() -> list[dict]:
-    df = _read_csv("data/customer_interactions.csv")
+    df = _get_interactions_df()
     if df.empty:
         return []
-    df = df.fillna("").copy()
+    df = df.fillna("")
     df = df[df["Customer"].str.strip() != ""]
     df["_dt"] = pd.to_datetime(df["Date"], errors="coerce")
     df = df.dropna(subset=["_dt"]).sort_values("_dt", ascending=False).head(20)
@@ -145,10 +290,9 @@ def get_recent_replies() -> list[dict]:
 
 
 def get_customer_replies() -> list:
-    path = os.path.join(BASE_DIR, "data", "customer_interactions.csv")
-    if not os.path.exists(path):
+    df = _get_interactions_df()
+    if df.empty:
         return []
-    df = pd.read_csv(path, dtype=str).fillna("")
     df = df[df["Notes"].str.strip() != ""]
     if df.empty:
         return []
@@ -236,7 +380,6 @@ def parse_weekly_report() -> dict:
     in_accounts = False
     current_account = None
     account_phase = None
-    dash_re = re.compile(r'[—–-]')
 
     for line in lines:
         if "TOP 10 PAST-DUE ACCOUNTS" in line:
@@ -291,12 +434,11 @@ def parse_weekly_report() -> dict:
 
 def enrich_last_updates(past_due_accounts: list) -> list:
     """Override last_update on each past-due account using the most recent
-    matching entry in customer_interactions.csv, keyed by invoice number."""
-    path = os.path.join(BASE_DIR, "data", "customer_interactions.csv")
-    if not os.path.exists(path):
+    matching entry in customer_interactions, keyed by invoice number."""
+    df = _get_interactions_df()
+    if df.empty:
         return past_due_accounts
 
-    df = pd.read_csv(path, dtype=str).fillna("")
     df = df[df["Notes"].str.strip() != ""]
     df["_dt"] = pd.to_datetime(df["Date"], errors="coerce")
     df = df.dropna(subset=["_dt"])
@@ -370,9 +512,29 @@ def upload_ar():
     f = request.files["file"]
     if not f.filename.lower().endswith(".csv"):
         return jsonify({"ok": False, "error": "File must be a .csv"})
+
+    content = f.read().decode("utf-8", errors="replace")
+
+    # Write to filesystem so automation scripts can read it
     dest = os.path.join(BASE_DIR, "exports", "ar_aging.csv")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    f.save(dest)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write(content)
+
+    # Persist to Postgres so the file survives redeploys
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO stored_files (key, content, updated_at) VALUES (%s, %s, NOW()) "
+                        "ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()",
+                        ("ar_aging", content),
+                    )
+        finally:
+            conn.close()
+
     return jsonify({"ok": True})
 
 
@@ -386,25 +548,31 @@ def summarize_reply():
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
-        return jsonify({"ok": False, "error": "ANTHROPIC_API_KEY not set in .env"})
+        return jsonify({"ok": False, "error": "ANTHROPIC_API_KEY is not configured."})
 
-    client  = anthropic.Anthropic(api_key=api_key)
-    message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=60,
-        system=(
-            "Summarize customer replies in one phrase, 15 words or fewer. "
-            "Capture only the key action or commitment — e.g. 'Will pay via ACH on April 6' or "
-            "'Payment terms are 60 days, due April 7' or 'Invoice in system to be paid.' "
-            "No subjects, no pleasantries, no signatures, no filler. Just the key fact."
-        ),
-        messages=[{
-            "role": "user",
-            "content": reply,
-        }],
-    )
-    summary = message.content[0].text.strip()
-    return jsonify({"ok": True, "summary": summary})
+    try:
+        client  = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=60,
+            system=(
+                "Summarize customer replies in one phrase, 15 words or fewer. "
+                "Capture only the key action or commitment — e.g. 'Will pay via ACH on April 6' or "
+                "'Payment terms are 60 days, due April 7' or 'Invoice in system to be paid.' "
+                "No subjects, no pleasantries, no signatures, no filler. Just the key fact."
+            ),
+            messages=[{"role": "user", "content": reply}],
+        )
+        summary = message.content[0].text.strip()
+        return jsonify({"ok": True, "summary": summary})
+    except anthropic.APIConnectionError:
+        return jsonify({"ok": False, "error": "Could not connect to Anthropic API. Check your network or try again."})
+    except anthropic.AuthenticationError:
+        return jsonify({"ok": False, "error": "Invalid Anthropic API key. Contact your administrator."})
+    except anthropic.RateLimitError:
+        return jsonify({"ok": False, "error": "Anthropic API rate limit reached. Please wait a moment and try again."})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Summary generation failed: {exc}"})
 
 
 @app.route("/log-reply", methods=["POST"])
@@ -416,24 +584,8 @@ def log_reply():
     if not invoice or not summary:
         return jsonify({"ok": False, "error": "Invoice and summary are required."})
 
-    csv_path = os.path.join(BASE_DIR, "data", "customer_interactions.csv")
-    today    = datetime.today().strftime("%Y-%m-%d")
-    new_row  = pd.DataFrame([{
-        "Date":     today,
-        "Customer": customer,
-        "Invoice":  invoice,
-        "Type":     "Customer Reply",
-        "Notes":    summary,
-    }])
-
-    if os.path.exists(csv_path):
-        existing = pd.read_csv(csv_path, dtype=str)
-        updated  = pd.concat([existing, new_row], ignore_index=True)
-    else:
-        updated = new_row
-
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-    updated.to_csv(csv_path, index=False)
+    today = datetime.today().strftime("%Y-%m-%d")
+    _append_interaction(today, customer, invoice, "Customer Reply", summary)
     return jsonify({"ok": True})
 
 
@@ -445,23 +597,8 @@ def delete_reply():
     customer = (data.get("customer") or "").strip()
     notes    = (data.get("notes")    or "").strip()
 
-    csv_path = os.path.join(BASE_DIR, "data", "customer_interactions.csv")
-    if not os.path.exists(csv_path):
-        return jsonify({"ok": False, "error": "No interactions file found."})
-
-    df = pd.read_csv(csv_path, dtype=str).fillna("")
-    mask = (
-        (df["Date"].str.strip()     == raw_date) &
-        (df["Invoice"].str.strip()  == invoice)  &
-        (df["Customer"].str.strip() == customer) &
-        (df["Notes"].str.strip()    == notes)
-    )
-    idx = df.index[mask]
-    if idx.empty:
+    if not _delete_interaction(raw_date, invoice, customer, notes):
         return jsonify({"ok": False, "error": "Entry not found."})
-
-    df = df.drop(idx[0])
-    df.to_csv(csv_path, index=False)
     return jsonify({"ok": True})
 
 
@@ -619,6 +756,11 @@ def send_report():
             err = resp.text
         return jsonify({"ok": False, "error": err})
 
+
+# ── Startup ───────────────────────────────────────────────────────────────────
+
+# Run on import so gunicorn workers also initialise the database
+init_db()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
