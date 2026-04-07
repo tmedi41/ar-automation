@@ -17,8 +17,18 @@ Invoices outside all three windows are excluded from emails.
 
 import os
 import re
+import sys
 import textwrap
 import pandas as pd
+
+# ── Postgres helpers (db_utils lives in the same scripts/ directory) ──────────
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import db_utils as _db
+    _db.init_tables()
+    _db_available = bool(os.environ.get("DATABASE_URL", ""))
+except Exception:
+    _db_available = False
 
 # ── Microsoft Graph API authentication ───────────────────────────────────────
 # Credentials are read from the .env file in the project root; they are never
@@ -65,7 +75,11 @@ for d in (os.path.join(BASE_DIR, "database"),
 # ════════════════════════════════════════════════════════════════════════════
 # 1.  LOAD & CATEGORISE INVOICE DATA
 # ════════════════════════════════════════════════════════════════════════════
-df = pd.read_csv(INPUT_FILE, dtype=str)
+if _db_available:
+    _ci = _db.read_clean_invoices()
+    df = _ci if (_ci is not None and not _ci.empty) else pd.read_csv(INPUT_FILE, dtype=str)
+else:
+    df = pd.read_csv(INPUT_FILE, dtype=str)
 df["Balance"]      = pd.to_numeric(df["Balance"], errors="coerce").fillna(0.0)
 df["Due_Date"]     = pd.to_datetime(df["Due_Date"],     format="%m/%d/%Y", errors="coerce")
 df["Invoice_Date"] = pd.to_datetime(df["Invoice_Date"], format="%m/%d/%Y", errors="coerce")
@@ -101,9 +115,18 @@ past_due = df[df["Days_Past_Due"] > 0].copy()
 # ════════════════════════════════════════════════════════════════════════════
 # 2.  LOAD / INITIALISE COLLECTIONS LOG
 # ════════════════════════════════════════════════════════════════════════════
-if os.path.exists(LOG_FILE):
+if _db_available:
+    _log_raw_db = _db.read_collections_log()
+    log = _log_raw_db if _log_raw_db is not None else pd.DataFrame(columns=LOG_COLUMNS)
+    if log.empty:
+        log["Email_Sent_Date"] = pd.NaT
+    else:
+        log["Email_Sent_Date"] = pd.to_datetime(
+            log["Email_Sent_Date"], format="%m/%d/%Y", errors="coerce"
+        )
+elif os.path.exists(LOG_FILE):
     log = pd.read_csv(LOG_FILE, dtype=str)
-    for col in LOG_COLUMNS:          # forward-compatible: add missing columns
+    for col in LOG_COLUMNS:
         if col not in log.columns:
             log[col] = ""
     log["Email_Sent_Date"] = pd.to_datetime(
@@ -126,23 +149,35 @@ recent_contact = (
 
 # ── Payment detection ────────────────────────────────────────────────────────
 # Any invoice that was logged (Status != "Paid") but is no longer in the
-# current AR export is assumed paid/cleared.  Update the log on disk now so
-# Section 5 picks up the final state when it appends new entries.
+# current AR export is assumed paid/cleared.
 payments_detected = 0
-if os.path.exists(LOG_FILE):
-    _log_raw = pd.read_csv(LOG_FILE, dtype=str)
-    for _col in LOG_COLUMNS:
-        if _col not in _log_raw.columns:
-            _log_raw[_col] = ""
+if not log.empty:
     _current_inv  = set(df["Invoice"].astype(str).str.strip())
-    _unpaid_mask  = _log_raw["Status"].fillna("").ne("Paid")
-    _missing_mask = ~_log_raw["Invoice"].fillna("").str.strip().isin(_current_inv)
+    _unpaid_mask  = log["Status"].fillna("").ne("Paid")
+    _missing_mask = ~log["Invoice"].fillna("").str.strip().isin(_current_inv)
     _paid_update  = _unpaid_mask & _missing_mask
     payments_detected = int(_paid_update.sum())
     if payments_detected > 0:
-        _log_raw.loc[_paid_update, "Status"]    = "Paid"
-        _log_raw.loc[_paid_update, "Paid_Date"] = today.strftime("%m/%d/%Y")
-        _log_raw.to_csv(LOG_FILE, index=False)
+        _paid_date_str = today.strftime("%m/%d/%Y")
+        _invoices_to_mark = log.loc[_paid_update, "Invoice"].tolist()
+        if _db_available:
+            _db.mark_invoices_paid(_invoices_to_mark, _paid_date_str)
+        else:
+            # CSV fallback: reload, update, and resave
+            if os.path.exists(LOG_FILE):
+                _csv_log = pd.read_csv(LOG_FILE, dtype=str)
+                for _col in LOG_COLUMNS:
+                    if _col not in _csv_log.columns:
+                        _csv_log[_col] = ""
+                _csv_unpaid  = _csv_log["Status"].fillna("").ne("Paid")
+                _csv_missing = ~_csv_log["Invoice"].fillna("").str.strip().isin(_current_inv)
+                _csv_upd     = _csv_unpaid & _csv_missing
+                _csv_log.loc[_csv_upd, "Status"]    = "Paid"
+                _csv_log.loc[_csv_upd, "Paid_Date"] = _paid_date_str
+                _csv_log.to_csv(LOG_FILE, index=False)
+        # Keep in-memory log in sync so sections 10A/10C see paid status
+        log.loc[_paid_update, "Status"]    = "Paid"
+        log.loc[_paid_update, "Paid_Date"] = _paid_date_str
         print(f"[INFO] {payments_detected} invoice(s) marked as Paid in collections log.")
 
 
@@ -578,16 +613,19 @@ for customer, group in actionable.groupby("Customer", sort=True):
 #     Append new rows; preserve existing Status / Notes on older entries.
 # ════════════════════════════════════════════════════════════════════════════
 if new_log_rows:
-    new_df = pd.DataFrame(new_log_rows, columns=LOG_COLUMNS)
-    if os.path.exists(LOG_FILE):
-        existing_log = pd.read_csv(LOG_FILE, dtype=str)
-        for col in LOG_COLUMNS:
-            if col not in existing_log.columns:
-                existing_log[col] = ""
-        updated_log = pd.concat([existing_log, new_df], ignore_index=True)
+    if _db_available:
+        _db.append_log_rows(new_log_rows)
     else:
-        updated_log = new_df
-    updated_log.to_csv(LOG_FILE, index=False)
+        new_df = pd.DataFrame(new_log_rows, columns=LOG_COLUMNS)
+        if os.path.exists(LOG_FILE):
+            existing_log = pd.read_csv(LOG_FILE, dtype=str)
+            for col in LOG_COLUMNS:
+                if col not in existing_log.columns:
+                    existing_log[col] = ""
+            updated_log = pd.concat([existing_log, new_df], ignore_index=True)
+        else:
+            updated_log = new_df
+        updated_log.to_csv(LOG_FILE, index=False)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -752,8 +790,8 @@ print(sep)
 # ── Rolling 7-day window ─────────────────────────────────────────────────────
 week_start = today - pd.Timedelta(days=6)
 
-# ── Create interactions file if missing (Tanya fills this in manually) ───────
-if not os.path.exists(INTERACTIONS_FILE):
+# ── Create interactions file if missing (only needed for CSV fallback) ───────
+if not _db_available and not os.path.exists(INTERACTIONS_FILE):
     pd.DataFrame(columns=["Date", "Customer", "Invoice", "Type", "Notes"]) \
       .to_csv(INTERACTIONS_FILE, index=False)
 
@@ -763,7 +801,11 @@ if not os.path.exists(INTERACTIONS_FILE):
 ia: pd.DataFrame = pd.DataFrame()
 most_recent_contact: dict = {}
 try:
-    ia = pd.read_csv(INTERACTIONS_FILE, dtype=str).fillna("")
+    if _db_available:
+        _ia_raw = _db.read_customer_interactions()
+        ia = _ia_raw.fillna("") if _ia_raw is not None else pd.DataFrame()
+    else:
+        ia = pd.read_csv(INTERACTIONS_FILE, dtype=str).fillna("")
     if not ia.empty and {"Date", "Customer", "Notes"}.issubset(ia.columns):
         ia["_dt"] = pd.to_datetime(ia["Date"], errors="coerce")
         ia = ia.dropna(subset=["_dt"])
@@ -778,15 +820,13 @@ except Exception:
 
 # ── A. Customers contacted this week (from collections log) ──────────────────
 week_type_counts = {"PRE_DUE": 0, "PAST_DUE": 0, "ESCALATION": 0}
-if os.path.exists(LOG_FILE):
-    _clog = pd.read_csv(LOG_FILE, dtype=str)
-    _clog["Email_Sent_Date"] = pd.to_datetime(
-        _clog["Email_Sent_Date"], format="%m/%d/%Y", errors="coerce"
-    )
-    _week_sends = _clog[
-        _clog["Email_Sent_Date"].notna()
-        & (_clog["Email_Sent_Date"] >= week_start)
-        & (_clog["Email_Sent_Date"] <= today)
+if not log.empty:
+    # Re-parse Email_Sent_Date (column may be datetime or string depending on path)
+    _clog_sent_dt = pd.to_datetime(log["Email_Sent_Date"], format="%m/%d/%Y", errors="coerce")
+    _week_sends = log[
+        _clog_sent_dt.notna()
+        & (_clog_sent_dt >= week_start)
+        & (_clog_sent_dt <= today)
     ]
     for etype in week_type_counts:
         week_type_counts[etype] = int(
@@ -811,28 +851,26 @@ if not ia.empty and "_dt" in ia.columns:
 
 # ── C. Payments logged this week (log entries where Status == "Paid") ────────
 payments_this_week: list[dict] = []
-if os.path.exists(LOG_FILE):
-    _plog = pd.read_csv(LOG_FILE, dtype=str)
-    _plog["Paid_Date_dt"] = pd.to_datetime(
-        _plog["Paid_Date"], format="%m/%d/%Y", errors="coerce"
-    )
-    _paid_week = _plog[
-        (_plog["Status"].fillna("") == "Paid")
-        & _plog["Paid_Date_dt"].notna()
-        & (_plog["Paid_Date_dt"] >= week_start)
-        & (_plog["Paid_Date_dt"] <= today)
-        & _plog["Customer"].fillna("").str.strip().ne("")
-        & _plog["Invoice"].fillna("").str.strip().ne("")
+if not log.empty:
+    _plog_paid_dt = pd.to_datetime(log["Paid_Date"], format="%m/%d/%Y", errors="coerce")
+    _paid_week = log[
+        (log["Status"].fillna("") == "Paid")
+        & _plog_paid_dt.notna()
+        & (_plog_paid_dt >= week_start)
+        & (_plog_paid_dt <= today)
+        & log["Customer"].fillna("").str.strip().ne("")
+        & log["Invoice"].fillna("").str.strip().ne("")
     ].copy()
     # Try to attach balance from current AR; fall back to None
     _inv_bal = df.set_index("Invoice")["Balance"] if not df.empty else pd.Series(dtype=float)
     for _, _pr in _paid_week.iterrows():
         _inv_str = str(_pr.get("Invoice", "") or "").strip()
         _bal = _inv_bal.get(_inv_str, None)
+        _pd_dt = pd.to_datetime(_pr.get("Paid_Date", ""), format="%m/%d/%Y", errors="coerce")
         payments_this_week.append({
             "customer":  str(_pr.get("Customer", "") or ""),
             "invoice":   _inv_str,
-            "paid_date": _pr["Paid_Date_dt"].strftime("%m/%d/%Y"),
+            "paid_date": _pd_dt.strftime("%m/%d/%Y") if pd.notna(_pd_dt) else "",
             "balance":   _bal,
         })
 

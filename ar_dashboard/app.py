@@ -79,6 +79,31 @@ def init_db():
                     )
                 """)
                 cur.execute("""
+                    CREATE TABLE IF NOT EXISTS collections_log (
+                        id              SERIAL PRIMARY KEY,
+                        customer        TEXT NOT NULL DEFAULT '',
+                        invoice         TEXT NOT NULL DEFAULT '',
+                        email_sent_date TEXT NOT NULL DEFAULT '',
+                        followup_date   TEXT NOT NULL DEFAULT '',
+                        status          TEXT NOT NULL DEFAULT '',
+                        paid_date       TEXT NOT NULL DEFAULT '',
+                        email_type      TEXT NOT NULL DEFAULT '',
+                        notes           TEXT NOT NULL DEFAULT '',
+                        created_at      TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS clean_invoices (
+                        id           SERIAL PRIMARY KEY,
+                        customer     TEXT NOT NULL DEFAULT '',
+                        invoice      TEXT NOT NULL DEFAULT '',
+                        invoice_date TEXT NOT NULL DEFAULT '',
+                        due_date     TEXT NOT NULL DEFAULT '',
+                        balance      NUMERIC(14, 2),
+                        email        TEXT NOT NULL DEFAULT ''
+                    )
+                """)
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS stored_files (
                         key        TEXT PRIMARY KEY,
                         content    TEXT NOT NULL,
@@ -119,6 +144,28 @@ def _get_interactions_df() -> pd.DataFrame:
             conn.close()
     # Local dev fallback — read from CSV
     return _read_csv("data/customer_interactions.csv")
+
+
+def _get_collections_log_df() -> pd.DataFrame:
+    """Return collections_log as a DataFrame from Postgres or CSV fallback."""
+    _log_cols = ["Customer", "Invoice", "Email_Sent_Date", "Followup_Date",
+                 "Status", "Paid_Date", "Email_Type", "Notes"]
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT customer, invoice, email_sent_date, followup_date, "
+                    "status, paid_date, email_type, notes "
+                    "FROM collections_log ORDER BY id"
+                )
+                rows = cur.fetchall()
+            if not rows:
+                return pd.DataFrame(columns=_log_cols)
+            return pd.DataFrame(rows, columns=_log_cols).fillna("")
+        finally:
+            conn.close()
+    return _read_csv("database/collections_log.csv")
 
 
 def _append_interaction(date: str, customer: str, invoice: str, type_: str, notes: str):
@@ -226,8 +273,8 @@ def get_metrics() -> dict:
         if m:
             metrics["generated"] = m.group(1).strip()
 
-    # ── collections_log.csv ──────────────────────────────────────────────────
-    log = _read_csv("database/collections_log.csv")
+    # ── collections_log ───────────────────────────────────────────────────────
+    log = _get_collections_log_df()
     if not log.empty:
         today      = datetime.today().date()
         week_start = today - timedelta(days=6)

@@ -8,6 +8,7 @@ groups invoices by customer, and writes database/clean_invoices.csv.
 
 import os
 import re
+import sys
 import pandas as pd
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -98,6 +99,19 @@ df = df.sort_values(["Customer", "Due_Date"], na_position="last").reset_index(dr
 # ── Save ───────────────────────────────────────────────────────────────────────
 os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
 df.to_csv(OUTPUT_FILE, index=False)
+
+# Persist to Postgres so clean_invoices survives Railway redeploys.
+# Falls back silently when DATABASE_URL is not set (local dev).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from db_utils import init_tables, write_clean_invoices
+    init_tables()
+    if write_clean_invoices(df):
+        print("Postgres: clean_invoices table updated.")
+    else:
+        print("[INFO] DATABASE_URL not set — Postgres write skipped.")
+except Exception as _db_err:
+    print(f"[WARN] Postgres write failed (CSV still saved): {_db_err}")
 
 
 # ── Report ─────────────────────────────────────────────────────────────────────
