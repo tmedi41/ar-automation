@@ -18,15 +18,32 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+def _is_authenticated() -> bool:
+    return session.get("authenticated") is True
+
+
+def _login_required(fn):
+    from functools import wraps
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not _is_authenticated():
+            return redirect(url_for("login"))
+        return fn(*args, **kwargs)
+    return wrapper
 
 
 # ── Postgres helpers ──────────────────────────────────────────────────────────
@@ -470,7 +487,27 @@ def enrich_last_updates(past_due_accounts: list) -> list:
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        correct  = os.environ.get("DASHBOARD_PASSWORD", "")
+        if password and password == correct:
+            session["authenticated"] = True
+            return redirect(url_for("index"))
+        error = "Incorrect password."
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
 @app.route("/")
+@_login_required
 def index():
     weekly_data = parse_weekly_report()
     weekly_data["past_due_accounts"] = enrich_last_updates(weekly_data["past_due_accounts"])
@@ -486,6 +523,7 @@ def index():
 
 
 @app.route("/run-automation", methods=["POST"])
+@_login_required
 def run_automation():
     script = os.path.join(BASE_DIR, "scripts", "run_ar_automation.py")
     try:
@@ -506,6 +544,7 @@ def run_automation():
 
 
 @app.route("/upload-ar", methods=["POST"])
+@_login_required
 def upload_ar():
     if "file" not in request.files:
         return jsonify({"ok": False, "error": "No file provided."})
@@ -539,6 +578,7 @@ def upload_ar():
 
 
 @app.route("/summarize-reply", methods=["POST"])
+@_login_required
 def summarize_reply():
     data    = request.get_json()
     invoice = (data.get("invoice") or "").strip()
@@ -576,6 +616,7 @@ def summarize_reply():
 
 
 @app.route("/log-reply", methods=["POST"])
+@_login_required
 def log_reply():
     data     = request.get_json()
     invoice  = (data.get("invoice")  or "").strip()
@@ -590,6 +631,7 @@ def log_reply():
 
 
 @app.route("/delete-reply", methods=["POST"])
+@_login_required
 def delete_reply():
     data     = request.get_json()
     raw_date = (data.get("raw_date") or "").strip()
@@ -712,6 +754,7 @@ def _build_report_html(weekly_data: dict, customer_replies: list, metrics: dict)
 
 
 @app.route("/send-report", methods=["POST"])
+@_login_required
 def send_report():
     sender = os.environ.get("GRAPH_SENDER_EMAIL", "")
     if not sender:

@@ -14,7 +14,12 @@
     <div class="header-title">AR Collections</div>
     <div class="header-sub">Working Solutions Inc.{% if metrics.generated %} &mdash; {{ metrics.generated }}{% endif %}</div>
   </div>
-  <button class="btn-run" id="btn-run">&#9654; Run Automation</button>
+  <div style="display:flex;align-items:center;gap:12px">
+    <button class="btn-run" id="btn-run">&#9654; Run Automation</button>
+    <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
+      <button type="submit" class="btn-logout">Log out</button>
+    </form>
+  </div>
 </header>
 
 <!-- ── Nav Tabs ──────────────────────────────────────────────────────────── -->

@@ -54,6 +54,20 @@ body {
 .btn-run:hover { background: #E8E6DF; border-color: #9A9891; }
 .btn-run:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.btn-logout {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+  color: #888780;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.15s;
+}
+.btn-logout:hover { color: #2C2C2A; }
+
 /* ── Nav tabs ─────────────────────────────────────────────────────────── */
 .nav-tabs {
   display: flex;

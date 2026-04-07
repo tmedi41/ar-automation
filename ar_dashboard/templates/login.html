@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AR Collections — Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: #F5F5F3;
+      color: #2C2C2A;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .login-card {
+      background: #FFFFFF;
+      border: 0.5px solid #D9D7CE;
+      border-radius: 12px;
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 360px;
+    }
+
+    .login-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #2C2C2A;
+      letter-spacing: -0.01em;
+      margin-bottom: 6px;
+    }
+
+    .login-sub {
+      font-size: 13px;
+      color: #888780;
+      margin-bottom: 28px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      color: #888780;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    input[type="password"] {
+      width: 100%;
+      padding: 9px 12px;
+      font-size: 14px;
+      font-family: 'DM Sans', sans-serif;
+      background: #F5F5F3;
+      border: 0.5px solid #B4B2A9;
+      border-radius: 8px;
+      color: #2C2C2A;
+      outline: none;
+      transition: border-color 0.15s;
+      margin-bottom: 20px;
+    }
+
+    input[type="password"]:focus {
+      border-color: #2C2C2A;
+      background: #FFFFFF;
+    }
+
+    .error-msg {
+      font-size: 13px;
+      color: #C0392B;
+      margin-bottom: 14px;
+    }
+
+    button[type="submit"] {
+      width: 100%;
+      padding: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      font-family: 'DM Sans', sans-serif;
+      background: #2C2C2A;
+      color: #F5F5F3;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    button[type="submit"]:hover { background: #3E3E3B; }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="login-title">AR Collections</div>
+    <div class="login-sub">Working Solutions Inc.</div>
+
+    <form method="POST" action="{{ url_for('login') }}">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autofocus autocomplete="current-password" />
+      {% if error %}
+        <div class="error-msg">{{ error }}</div>
+      {% endif %}
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+</body>
+</html>
