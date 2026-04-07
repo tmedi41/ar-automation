@@ -841,6 +841,45 @@ body {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Scan Inbox modal ─────────────────────────────────────────────────── */
+#scan-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+}
+
+#scan-overlay.active { display: flex; }
+
+.scan-modal { max-width: 560px; }
+
+.scan-results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+  margin-bottom: 18px;
+}
+
+.scan-result-item {
+  border: 1px solid rgba(0,0,0,0.09);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #F5F5F3;
+}
+
+.scan-result-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
 /* ── Responsive ───────────────────────────────────────────────────────── */
 @media (max-width: 960px) {
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }

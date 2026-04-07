@@ -74,6 +74,106 @@ btnClose.addEventListener("click", () => overlay.classList.remove("active"));
 btnRefresh.addEventListener("click", () => window.location.reload());
 overlay.addEventListener("click", e => { if (e.target === overlay) overlay.classList.remove("active"); });
 
+// ── Scan Inbox ────────────────────────────────────────────────────────────
+const btnScanInbox    = document.getElementById("btn-scan-inbox");
+const scanOverlay     = document.getElementById("scan-overlay");
+const scanModalTitle  = document.getElementById("scan-modal-title");
+const scanModalMsg    = document.getElementById("scan-modal-msg");
+const scanResultsList = document.getElementById("scan-results-list");
+const btnScanClose    = document.getElementById("btn-scan-close");
+const btnScanRefresh  = document.getElementById("btn-scan-refresh");
+
+function escHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function openScanModal() {
+  scanOverlay.classList.add("active");
+  scanResultsList.innerHTML    = "";
+  btnScanClose.style.display   = "none";
+  btnScanRefresh.style.display = "none";
+  scanModalTitle.textContent   = "Scanning Inbox\u2026";
+  scanModalMsg.innerHTML       = `<span class="spinner"></span> Checking for customer replies. This may take a moment.`;
+}
+
+function resolveScanModal(data) {
+  if (!data.ok) {
+    scanModalTitle.textContent = "Scan Failed";
+    scanModalMsg.textContent   = data.error || "An error occurred.";
+    btnScanClose.style.display = "inline-block";
+    return;
+  }
+
+  const n = data.new_count || 0;
+  const s = data.skipped   || 0;
+
+  scanModalTitle.textContent = n > 0
+    ? `${n} new ${n === 1 ? "reply" : "replies"} logged`
+    : "No new replies found";
+
+  let subMsg = "";
+  if (s > 0) subMsg += `${s} already logged (skipped). `;
+  if (n === 0) subMsg += "No new customer replies detected in the last 7 days.";
+  scanModalMsg.textContent = subMsg.trim();
+
+  if (n > 0 && data.items && data.items.length) {
+    let html = '<div class="scan-results-list">';
+    for (const item of data.items) {
+      const inv = item.invoice
+        ? `<span class="reply-invoice">inv ${escHtml(item.invoice)}</span>`
+        : "";
+      html += `
+        <div class="scan-result-item">
+          <div class="scan-result-meta">
+            <span class="reply-customer">${escHtml(item.customer)}</span>
+            ${inv}
+            <span class="reply-date">${escHtml(item.date)}</span>
+          </div>
+          <div class="reply-notes">${escHtml(item.summary)}</div>
+        </div>`;
+    }
+    html += "</div>";
+    scanResultsList.innerHTML = html;
+  }
+
+  btnScanClose.style.display   = "inline-block";
+  btnScanRefresh.style.display = n > 0 ? "inline-block" : "none";
+}
+
+btnScanInbox.addEventListener("click", async () => {
+  btnScanInbox.disabled = true;
+  openScanModal();
+  try {
+    const resp = await fetch("/scan-inbox", { method: "POST" });
+    const data = await resp.json();
+    resolveScanModal(data);
+    if (data.ok) {
+      const n = data.new_count || 0;
+      showToast(
+        n > 0
+          ? `${n} new ${n === 1 ? "reply" : "replies"} logged from inbox.`
+          : "Inbox scanned — no new replies found.",
+        "success"
+      );
+    } else {
+      showToast(data.error || "Scan failed.", "error");
+    }
+  } catch (err) {
+    resolveScanModal({ ok: false, error: String(err) });
+    showToast("Network error — " + err, "error");
+  } finally {
+    btnScanInbox.disabled = false;
+  }
+});
+
+btnScanClose.addEventListener("click", () => scanOverlay.classList.remove("active"));
+btnScanRefresh.addEventListener("click", () => window.location.reload());
+scanOverlay.addEventListener("click", e => {
+  if (e.target === scanOverlay) scanOverlay.classList.remove("active");
+});
+
 // ── Upload AR Export tab ──────────────────────────────────────────────────
 const uploadZone     = document.getElementById("upload-zone");
 const fileInput      = document.getElementById("file-input");

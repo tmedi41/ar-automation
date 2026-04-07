@@ -15,6 +15,7 @@
     <div class="header-sub">Working Solutions Inc.{% if metrics.generated %} &mdash; {{ metrics.generated }}{% endif %}</div>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
+    <button class="btn-run" id="btn-scan-inbox">&#128235; Scan Inbox</button>
     <button class="btn-run" id="btn-run">&#9654; Run Automation</button>
     <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
       <button type="submit" class="btn-logout">Log out</button>
@@ -389,6 +390,19 @@
     <div class="run-modal-footer">
       <button class="btn-secondary" id="btn-close">Close</button>
       <button class="btn-run" id="btn-refresh" style="display:none">&#8635; Refresh Page</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Scan Inbox modal ──────────────────────────────────────────────────── -->
+<div id="scan-overlay">
+  <div class="run-modal scan-modal">
+    <h2 id="scan-modal-title">Scanning Inbox…</h2>
+    <p id="scan-modal-msg"></p>
+    <div id="scan-results-list"></div>
+    <div class="run-modal-footer">
+      <button class="btn-secondary" id="btn-scan-close">Close</button>
+      <button class="btn-run" id="btn-scan-refresh" style="display:none">&#8635; Refresh Page</button>
     </div>
   </div>
 </div>

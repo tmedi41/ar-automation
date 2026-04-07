@@ -847,6 +847,156 @@ def send_report():
         return jsonify({"ok": False, "error": err})
 
 
+# ── Inbox Scanner ────────────────────────────────────────────────────────────
+
+def _strip_html(html: str) -> str:
+    """Remove HTML tags and collapse whitespace to plain text."""
+    text = re.sub(r'<[^>]+>', ' ', html)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+@app.route("/scan-inbox", methods=["POST"])
+@_login_required
+def scan_inbox():
+    sender_email = os.environ.get("GRAPH_SENDER_EMAIL", "")
+    if not sender_email:
+        return jsonify({"ok": False, "error": "GRAPH_SENDER_EMAIL not set in .env"})
+
+    try:
+        token = _graph_token()
+    except RuntimeError as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+    # ── Build duplicate-check set from existing interactions ──────────────────
+    existing = _get_interactions_df()
+    logged_keys: set[tuple] = set()
+    if not existing.empty:
+        for _, row in existing.iterrows():
+            c = str(row.get("Customer", "") or "").strip().lower()
+            d = str(row.get("Date",     "") or "").strip()[:10]
+            if c and d:
+                logged_keys.add((c, d))
+
+    # ── Fetch inbox messages from the last 7 days ─────────────────────────────
+    since = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    graph_headers = {
+        "Authorization": f"Bearer {token}",
+        "Prefer": 'outlook.body-content-type="text"',
+    }
+    base_url = (
+        f"https://graph.microsoft.com/v1.0/users/{sender_email}"
+        f"/mailFolders/inbox/messages"
+    )
+    params: dict | None = {
+        "$filter": f"receivedDateTime ge {since}",
+        "$select": "id,subject,from,receivedDateTime,body",
+        "$top":    "50",
+    }
+
+    messages: list[dict] = []
+    url: str | None = base_url
+    for _ in range(5):                           # max 250 messages
+        resp = http_requests.get(url, headers=graph_headers, params=params, timeout=30)
+        if resp.status_code != 200:
+            return jsonify({
+                "ok": False,
+                "error": f"Graph API error ({resp.status_code}): {resp.text[:300]}",
+            })
+        page = resp.json()
+        messages.extend(page.get("value", []))
+        url = page.get("@odata.nextLink")
+        params = None                            # nextLink already carries all params
+        if not url:
+            break
+
+    # ── Subject phrases that identify our outbound AR emails ─────────────────
+    TRIGGER_PHRASES = ["Past Due Notice", "Upcoming Invoice Due", "Outstanding Balance"]
+
+    # ── Anthropic client (optional — summaries degrade gracefully) ────────────
+    api_key   = os.environ.get("ANTHROPIC_API_KEY", "")
+    ai_client = anthropic.Anthropic(api_key=api_key) if api_key else None
+
+    logged:  list[dict] = []
+    skipped: int        = 0
+
+    for msg in messages:
+        subject      = (msg.get("subject") or "").strip()
+        from_info    = msg.get("from", {}).get("emailAddress", {})
+        sender_addr  = (from_info.get("address") or "").strip().lower()
+        sender_name  = (from_info.get("name")    or "").strip()
+        received_raw = (msg.get("receivedDateTime") or "")
+        body_raw     = (msg.get("body", {}).get("content") or "").strip()
+
+        # Skip emails we sent ourselves
+        if sender_addr == sender_email.lower():
+            continue
+
+        # Subject must match at least one trigger phrase
+        subj_lower = subject.lower()
+        if not any(p.lower() in subj_lower for p in TRIGGER_PHRASES):
+            continue
+
+        # Parse received date → YYYY-MM-DD
+        try:
+            date_str = datetime.strptime(received_raw[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+        except Exception:
+            date_str = datetime.today().strftime("%Y-%m-%d")
+
+        # Duplicate check: same sender name + same calendar day
+        dup_key = (sender_name.lower(), date_str)
+        if dup_key in logged_keys:
+            skipped += 1
+            continue
+
+        # Extract invoice number from subject (last 4-7 digit run, best-effort)
+        inv_matches = re.findall(r'\b(\d{4,7})\b', subject)
+        invoice = inv_matches[-1] if inv_matches else ""
+
+        # Normalise body to plain text
+        body_text = _strip_html(body_raw) if "<" in body_raw else body_raw
+        body_text = body_text[:2000]
+
+        # Generate AI summary (≤12 words); fall back to truncated body text
+        summary = ""
+        if ai_client and body_text:
+            try:
+                ai_resp = ai_client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=40,
+                    system=(
+                        "Summarize this customer email reply in one phrase, 12 words or fewer. "
+                        "Capture only the key action or commitment — e.g. 'Will pay via ACH Friday' "
+                        "or 'Invoice already sent to AP, processing next week'. "
+                        "No subjects, no pleasantries, no filler."
+                    ),
+                    messages=[{"role": "user", "content": body_text}],
+                )
+                summary = ai_resp.content[0].text.strip()
+            except Exception:
+                summary = body_text[:120]
+        elif body_text:
+            summary = body_text[:120]
+
+        # Persist and mark as seen
+        _append_interaction(date_str, sender_name, invoice, "Customer Reply", summary)
+        logged_keys.add(dup_key)
+
+        logged.append({
+            "customer": sender_name,
+            "invoice":  invoice,
+            "date":     date_str,
+            "subject":  subject,
+            "summary":  summary,
+        })
+
+    return jsonify({
+        "ok":        True,
+        "new_count": len(logged),
+        "skipped":   skipped,
+        "items":     logged,
+    })
+
+
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 # Run on import so gunicorn workers also initialise the database
