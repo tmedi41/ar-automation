@@ -27,9 +27,16 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Make scripts/ importable so we can reuse db_utils helpers
 sys.path.insert(0, os.path.join(BASE_DIR, "scripts"))
 try:
-    from db_utils import write_clean_invoices as _db_write_clean_invoices
-except Exception:
+    from db_utils import (
+        write_clean_invoices  as _db_write_clean_invoices,
+        read_clean_invoices   as _db_read_clean_invoices,
+        read_collections_log  as _db_read_collections_log,
+    )
+except Exception as _db_import_err:
+    print(f"[WARN] Could not import db_utils: {_db_import_err}")
     _db_write_clean_invoices = None
+    _db_read_clean_invoices  = None
+    _db_read_collections_log = None
 
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 
@@ -137,20 +144,26 @@ def init_db():
 
 def _get_interactions_df() -> pd.DataFrame:
     """Return customer_interactions as a DataFrame from Postgres or CSV fallback."""
-    conn = get_db_conn()
-    if conn:
+    _cols = ["Date", "Customer", "Invoice", "Type", "Notes"]
+    if DATABASE_URL:
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT date, customer, invoice, type, notes "
-                    "FROM customer_interactions ORDER BY date DESC, id DESC"
-                )
-                rows = cur.fetchall()
-            if not rows:
-                return pd.DataFrame(columns=["Date", "Customer", "Invoice", "Type", "Notes"])
-            return pd.DataFrame(rows, columns=["Date", "Customer", "Invoice", "Type", "Notes"]).fillna("")
-        finally:
-            conn.close()
+            conn = get_db_conn()
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT date, customer, invoice, type, notes "
+                            "FROM customer_interactions ORDER BY date DESC, id DESC"
+                        )
+                        rows = cur.fetchall()
+                    if not rows:
+                        return pd.DataFrame(columns=_cols)
+                    return pd.DataFrame(rows, columns=_cols).fillna("")
+                finally:
+                    conn.close()
+        except Exception as e:
+            print(f"[ERROR] _get_interactions_df: DB read failed: {e}")
+            return pd.DataFrame(columns=_cols)
     # Local dev fallback — read from CSV
     return _read_csv("data/customer_interactions.csv")
 
@@ -159,21 +172,26 @@ def _get_collections_log_df() -> pd.DataFrame:
     """Return collections_log as a DataFrame from Postgres or CSV fallback."""
     _log_cols = ["Customer", "Invoice", "Email_Sent_Date", "Followup_Date",
                  "Status", "Paid_Date", "Email_Type", "Notes"]
-    conn = get_db_conn()
-    if conn:
+    if DATABASE_URL:
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT customer, invoice, email_sent_date, followup_date, "
-                    "status, paid_date, email_type, notes "
-                    "FROM collections_log ORDER BY id"
-                )
-                rows = cur.fetchall()
-            if not rows:
-                return pd.DataFrame(columns=_log_cols)
-            return pd.DataFrame(rows, columns=_log_cols).fillna("")
-        finally:
-            conn.close()
+            conn = get_db_conn()
+            if conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT customer, invoice, email_sent_date, followup_date, "
+                            "status, paid_date, email_type, notes "
+                            "FROM collections_log ORDER BY id"
+                        )
+                        rows = cur.fetchall()
+                    if not rows:
+                        return pd.DataFrame(columns=_log_cols)
+                    return pd.DataFrame(rows, columns=_log_cols).fillna("")
+                finally:
+                    conn.close()
+        except Exception as e:
+            print(f"[ERROR] _get_collections_log_df: DB read failed: {e}")
+            return pd.DataFrame(columns=_log_cols)
     return _read_csv("database/collections_log.csv")
 
 
@@ -311,47 +329,71 @@ def _process_ar_csv_content(content: str) -> pd.DataFrame:
 
 def get_metrics() -> dict:
     metrics = {
-        "total_open_ar":     "$0.00",
-        "total_past_due":    "$0.00",
+        "total_open_ar":      "$0.00",
+        "total_past_due":     "$0.00",
         "payments_this_week": 0,
         "drafts_this_week":   0,
         "generated":          "",
         "customers_past_due": 0,
     }
 
-    # ── ar_summary.txt ───────────────────────────────────────────────────────
-    summary_path = os.path.join(BASE_DIR, "reports", "ar_summary.txt")
-    if os.path.exists(summary_path):
-        text = open(summary_path, encoding="utf-8").read()
-        m = re.search(r"Total Open AR\s+\$\s*([\d,]+\.?\d*)", text)
-        if m:
-            metrics["total_open_ar"] = f"${float(m.group(1).replace(',', '')):,.2f}"
-        m = re.search(r"Total Past Due\s+\$\s*([\d,]+\.?\d*)", text)
-        if m:
-            metrics["total_past_due"] = f"${float(m.group(1).replace(',', '')):,.2f}"
-        m = re.search(r"Customers Past Due\s+([\d,]+)", text)
-        if m:
-            metrics["customers_past_due"] = int(m.group(1).replace(",", ""))
-        m = re.search(r"Generated:\s*(.+)", text)
-        if m:
-            metrics["generated"] = m.group(1).strip()
+    today = datetime.today()
 
-    # ── collections_log ───────────────────────────────────────────────────────
+    # ── AR totals: read directly from clean_invoices (Postgres) ──────────────
+    ci = None
+    if DATABASE_URL and _db_read_clean_invoices:
+        try:
+            ci = _db_read_clean_invoices()
+            print(f"[INFO] get_metrics: read {len(ci) if ci is not None else 'None'} rows from clean_invoices")
+        except Exception as e:
+            print(f"[ERROR] get_metrics: clean_invoices read failed: {e}")
+            ci = None
+
+    if ci is not None and not ci.empty:
+        ci["Balance"] = pd.to_numeric(ci["Balance"], errors="coerce").fillna(0.0)
+        ci["_due"]    = pd.to_datetime(ci["Due_Date"], format="%m/%d/%Y", errors="coerce")
+        total_open    = ci["Balance"].sum()
+        past_due_mask = ci["_due"].notna() & (ci["_due"] < pd.Timestamp(today.date()))
+        past_due_ci   = ci[past_due_mask]
+        metrics["total_open_ar"]      = f"${total_open:,.2f}"
+        metrics["total_past_due"]     = f"${past_due_ci['Balance'].sum():,.2f}"
+        metrics["customers_past_due"] = int(past_due_ci["Customer"].nunique())
+        metrics["generated"]          = today.strftime("%B %d, %Y")
+        print(f"[INFO] get_metrics: total_open=${total_open:,.2f}, "
+              f"past_due_rows={len(past_due_ci)}, "
+              f"customers_past_due={metrics['customers_past_due']}")
+    elif not DATABASE_URL:
+        # Local dev fallback — read from ar_summary.txt if present
+        summary_path = os.path.join(BASE_DIR, "reports", "ar_summary.txt")
+        if os.path.exists(summary_path):
+            text = open(summary_path, encoding="utf-8").read()
+            m = re.search(r"Total Open AR\s+\$\s*([\d,]+\.?\d*)", text)
+            if m:
+                metrics["total_open_ar"] = f"${float(m.group(1).replace(',', '')):,.2f}"
+            m = re.search(r"Total Past Due\s+\$\s*([\d,]+\.?\d*)", text)
+            if m:
+                metrics["total_past_due"] = f"${float(m.group(1).replace(',', '')):,.2f}"
+            m = re.search(r"Customers Past Due\s+([\d,]+)", text)
+            if m:
+                metrics["customers_past_due"] = int(m.group(1).replace(",", ""))
+            m = re.search(r"Generated:\s*(.+)", text)
+            if m:
+                metrics["generated"] = m.group(1).strip()
+    else:
+        print("[WARN] get_metrics: DATABASE_URL is set but clean_invoices returned empty — "
+              "upload ar_aging.csv to populate it")
+
+    # ── Payments / contacts: read directly from collections_log (Postgres) ───
     log = _get_collections_log_df()
     if not log.empty:
-        today      = datetime.today().date()
-        week_start = today - timedelta(days=6)
-
-        log["_paid_dt"] = pd.to_datetime(log.get("Paid_Date", ""), format="%m/%d/%Y", errors="coerce")
-        log["_sent_dt"] = pd.to_datetime(log.get("Email_Sent_Date", ""), format="%m/%d/%Y", errors="coerce")
-
-        has_customer = log["Customer"].fillna("").str.strip().ne("")
-        has_invoice  = log["Invoice"].fillna("").str.strip().ne("")
-
-        # Use Timestamp comparisons — .dt.date returns None for NaT rows, which
-        # raises TypeError when compared with datetime.date in Python 3.
+        week_start    = today.date() - timedelta(days=6)
         week_start_ts = pd.Timestamp(week_start)
-        tomorrow_ts   = pd.Timestamp(today + timedelta(days=1))
+        tomorrow_ts   = pd.Timestamp(today.date() + timedelta(days=1))
+
+        log["_paid_dt"] = pd.to_datetime(log.get("Paid_Date", ""),       format="%m/%d/%Y", errors="coerce")
+        log["_sent_dt"] = pd.to_datetime(log.get("Email_Sent_Date", ""), format="%m/%d/%Y", errors="coerce")
+        has_customer    = log["Customer"].fillna("").str.strip().ne("")
+        has_invoice     = log["Invoice"].fillna("").str.strip().ne("")
 
         paid_mask = (
             (log["Status"].fillna("") == "Paid")
@@ -360,39 +402,94 @@ def get_metrics() -> dict:
             & (log["_paid_dt"] < tomorrow_ts)
             & has_customer & has_invoice
         )
-        metrics["payments_this_week"] = int(paid_mask.sum())
-
         sent_mask = (
             log["_sent_dt"].notna()
             & (log["_sent_dt"] >= week_start_ts)
             & (log["_sent_dt"] < tomorrow_ts)
             & has_customer
         )
-        metrics["drafts_this_week"] = int(sent_mask.sum())
+        metrics["payments_this_week"] = int(paid_mask.sum())
+        metrics["drafts_this_week"]   = int(sent_mask.sum())
+        print(f"[INFO] get_metrics: log_rows={len(log)}, "
+              f"payments_this_week={metrics['payments_this_week']}, "
+              f"drafts_this_week={metrics['drafts_this_week']}")
+    else:
+        print("[INFO] get_metrics: collections_log is empty")
 
     return metrics
 
 
 def get_priority_customers() -> list[dict]:
-    df = _read_csv("reports/collections_summary.csv")
-    if df.empty:
-        return []
-    df["Total_Balance"]     = pd.to_numeric(df["Total_Balance"],     errors="coerce").fillna(0)
-    df["Max_Days_Past_Due"] = pd.to_numeric(df["Max_Days_Past_Due"], errors="coerce").fillna(0).astype(int)
-    df["Invoice_Count"]     = pd.to_numeric(df["Invoice_Count"],     errors="coerce").fillna(0).astype(int)
-    df = df.sort_values("Total_Balance", ascending=False).head(20)
+    """Build priority customer list directly from clean_invoices (Postgres-first)."""
+    ci = None
+    if DATABASE_URL and _db_read_clean_invoices:
+        try:
+            ci = _db_read_clean_invoices()
+            print(f"[INFO] get_priority_customers: read {len(ci) if ci is not None else 'None'} rows")
+        except Exception as e:
+            print(f"[ERROR] get_priority_customers: DB read failed: {e}")
+            ci = None
+
+    if ci is None or ci.empty:
+        # Local dev fallback — use the pre-computed summary CSV if present
+        summary = _read_csv("reports/collections_summary.csv")
+        if summary.empty:
+            return []
+        summary["Total_Balance"]     = pd.to_numeric(summary["Total_Balance"],     errors="coerce").fillna(0)
+        summary["Max_Days_Past_Due"] = pd.to_numeric(summary["Max_Days_Past_Due"], errors="coerce").fillna(0).astype(int)
+        summary["Invoice_Count"]     = pd.to_numeric(summary["Invoice_Count"],     errors="coerce").fillna(0).astype(int)
+        summary = summary.sort_values("Total_Balance", ascending=False).head(20)
+        return [
+            {
+                "customer":    row["Customer"],
+                "balance":     f"${row['Total_Balance']:,.2f}",
+                "balance_raw": float(row["Total_Balance"]),
+                "invoices":    int(row["Invoice_Count"]),
+                "max_dpd":     int(row["Max_Days_Past_Due"]),
+                "type":        str(row.get("Email_Type", "")),
+            }
+            for _, row in summary.iterrows()
+        ]
+
+    # ── Compute live from clean_invoices ─────────────────────────────────────
+    today = pd.Timestamp.today().normalize()
+    ci["Balance"]        = pd.to_numeric(ci["Balance"], errors="coerce").fillna(0.0)
+    ci["_due"]           = pd.to_datetime(ci["Due_Date"], format="%m/%d/%Y", errors="coerce")
+    ci["Days_Past_Due"]  = (today - ci["_due"]).dt.days.fillna(0).clip(lower=0).astype(int)
+    ci["Days_Until_Due"] = (ci["_due"] - today).dt.days.fillna(9999).astype(int)
+
+    _SEVERITY = {"PRE_DUE": 0, "PAST_DUE": 1, "ESCALATION": 2}
+
+    def _categorize(row):
+        dpd = row["Days_Past_Due"]
+        dud = row["Days_Until_Due"]
+        if dpd > 20:         return "ESCALATION"
+        if 1 <= dpd <= 20:   return "PAST_DUE"
+        if 0 <= dud <= 7:    return "PRE_DUE"
+        return None
+
+    ci["Category"] = ci.apply(_categorize, axis=1)
 
     rows = []
-    for _, row in df.iterrows():
+    for customer, grp in ci.groupby("Customer", sort=False):
+        total_bal = grp["Balance"].sum()
+        if total_bal <= 0:
+            continue
+        max_dpd   = int(grp["Days_Past_Due"].max())
+        cats      = [c for c in grp["Category"].tolist() if c]
+        etype     = max(cats, key=lambda c: _SEVERITY[c]) if cats else ""
         rows.append({
-            "customer": row["Customer"],
-            "balance":  f"${row['Total_Balance']:,.2f}",
-            "balance_raw": float(row["Total_Balance"]),
-            "invoices": int(row["Invoice_Count"]),
-            "max_dpd":  int(row["Max_Days_Past_Due"]),
-            "type":     str(row.get("Email_Type", "")),
+            "customer":    customer,
+            "balance":     f"${total_bal:,.2f}",
+            "balance_raw": float(total_bal),
+            "invoices":    len(grp),
+            "max_dpd":     max_dpd,
+            "type":        etype,
         })
-    return rows
+
+    rows.sort(key=lambda r: -r["balance_raw"])
+    print(f"[INFO] get_priority_customers: returning {len(rows[:20])} customers")
+    return rows[:20]
 
 
 def get_recent_replies() -> list[dict]:
