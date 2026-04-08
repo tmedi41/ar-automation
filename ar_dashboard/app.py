@@ -6,9 +6,11 @@ Reads reports/, database/, and data/ from the parent AR_Automation directory.
 Run:  python3 ar_dashboard/app.py
 """
 
+import io
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timedelta
 
 import msal
@@ -21,6 +23,13 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Make scripts/ importable so we can reuse db_utils helpers
+sys.path.insert(0, os.path.join(BASE_DIR, "scripts"))
+try:
+    from db_utils import write_clean_invoices as _db_write_clean_invoices
+except Exception:
+    _db_write_clean_invoices = None
 
 load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 
@@ -244,6 +253,60 @@ def _read_csv(rel_path: str) -> pd.DataFrame:
         return pd.read_csv(path, dtype=str)
     except Exception:
         return pd.DataFrame()
+
+
+def _process_ar_csv_content(content: str) -> pd.DataFrame:
+    """Parse raw ar_aging.csv content into a clean DataFrame (mirrors ar_collections.py logic)."""
+    df = pd.read_csv(io.StringIO(content), dtype=str)
+    df.columns = df.columns.str.strip()
+    rename_map = {
+        "Customer full name": "Customer", "Customer Full Name": "Customer",
+        "customer full name": "Customer",
+        "Num": "Invoice", "Date": "Invoice_Date",
+        "Due date": "Due_Date", "Due Date": "Due_Date",
+        "Open balance": "Balance", "Open Balance": "Balance",
+        "Email": "Email",
+    }
+    df = df.rename(columns=rename_map)
+    keep = ["Customer", "Invoice", "Invoice_Date", "Due_Date", "Balance", "Email"]
+    df = df[[c for c in keep if c in df.columns]]
+    df["Customer"] = df["Customer"].fillna("").str.strip()
+    df["Balance"]  = df["Balance"].fillna("").str.strip()
+    is_summary = (
+        df["Customer"].str.upper().str.fullmatch("TOTAL")
+        | df["Customer"].str.match(r"^Total\s+for", case=False)
+        | df["Customer"].str.match(r"^\d+\s*-\s*\d+\s+days", case=False)
+        | df["Customer"].str.fullmatch(r"CURRENT", case=False)
+        | (df["Customer"] == "")
+    )
+    df = df[~is_summary].copy()
+
+    def _clean_bal(val: str):
+        s = str(val).strip()
+        if not s:
+            return None
+        negative = s.startswith("(") and s.endswith(")")
+        if negative:
+            s = s[1:-1]
+        s = re.sub(r"[$,\s]", "", s)
+        if s.startswith("-"):
+            negative = True
+            s = s[1:]
+        try:
+            result = float(s)
+            return -result if negative else result
+        except ValueError:
+            return None
+
+    df["Balance"] = df["Balance"].apply(_clean_bal)
+    for col in ("Invoice_Date", "Due_Date"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], format="mixed", dayfirst=False,
+                                     errors="coerce").dt.strftime("%m/%d/%Y")
+    df["Invoice"] = df["Invoice"].fillna("").str.strip()
+    if "Email" in df.columns:
+        df["Email"] = df["Email"].fillna("").str.strip()
+    return df.sort_values(["Customer", "Due_Date"], na_position="last").reset_index(drop=True)
 
 
 def get_metrics() -> dict:
@@ -607,7 +670,7 @@ def upload_ar():
     with open(dest, "w", encoding="utf-8") as fh:
         fh.write(content)
 
-    # Persist to Postgres so the file survives redeploys
+    # Persist raw CSV to Postgres so the file survives redeploys
     conn = get_db_conn()
     if conn:
         try:
@@ -620,6 +683,17 @@ def upload_ar():
                     )
         finally:
             conn.close()
+
+    # Parse and immediately populate clean_invoices so the table is always current
+    if _db_write_clean_invoices is not None and DATABASE_URL:
+        try:
+            df_clean = _process_ar_csv_content(content)
+            if _db_write_clean_invoices(df_clean):
+                print(f"[INFO] clean_invoices table populated ({len(df_clean)} rows).")
+            else:
+                print("[WARN] clean_invoices write returned False — check DATABASE_URL.")
+        except Exception as _proc_err:
+            print(f"[WARN] Could not populate clean_invoices after upload: {_proc_err}")
 
     return jsonify({"ok": True})
 

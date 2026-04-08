@@ -16,8 +16,48 @@ BASE_DIR    = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INPUT_FILE  = os.path.join(BASE_DIR, "exports",  "ar_aging.csv")
 OUTPUT_FILE = os.path.join(BASE_DIR, "database", "clean_invoices.csv")
 
+# ── DB helpers (imported early so we can restore ar_aging.csv if missing) ──────
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from db_utils import get_db_conn, init_tables, write_clean_invoices
+    _db_available = bool(os.environ.get("DATABASE_URL", ""))
+except Exception:
+    def get_db_conn(): return None   # type: ignore[misc]
+    _db_available = False
+
 
 # ── Load ───────────────────────────────────────────────────────────────────────
+# On Railway (DATABASE_URL set), ar_aging.csv may not be on disk after a redeploy.
+# Restore it from the stored_files table before attempting to read it.
+if not os.path.exists(INPUT_FILE):
+    if _db_available:
+        _conn = get_db_conn()
+        if _conn:
+            try:
+                with _conn.cursor() as _cur:
+                    _cur.execute("SELECT content FROM stored_files WHERE key = 'ar_aging'")
+                    _stored = _cur.fetchone()
+                if _stored:
+                    os.makedirs(os.path.dirname(INPUT_FILE), exist_ok=True)
+                    with open(INPUT_FILE, "w", encoding="utf-8") as _fh:
+                        _fh.write(_stored[0])
+                    print("[INFO] ar_aging.csv restored from database.")
+                else:
+                    print("[ERROR] ar_aging.csv not found on disk or in database. "
+                          "Upload it via the dashboard first.")
+                    sys.exit(1)
+            except Exception as _restore_err:
+                print(f"[ERROR] Failed to restore ar_aging.csv from database: {_restore_err}")
+                sys.exit(1)
+            finally:
+                _conn.close()
+        else:
+            print("[ERROR] DATABASE_URL is set but connection failed. Cannot restore ar_aging.csv.")
+            sys.exit(1)
+    else:
+        print(f"[ERROR] Input file not found: {INPUT_FILE}")
+        sys.exit(1)
+
 df = pd.read_csv(INPUT_FILE, dtype=str)
 
 # Normalize column names to strip stray whitespace
@@ -101,17 +141,15 @@ os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
 df.to_csv(OUTPUT_FILE, index=False)
 
 # Persist to Postgres so clean_invoices survives Railway redeploys.
-# Falls back silently when DATABASE_URL is not set (local dev).
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-try:
-    from db_utils import init_tables, write_clean_invoices
-    init_tables()
-    if write_clean_invoices(df):
-        print("Postgres: clean_invoices table updated.")
-    else:
-        print("[INFO] DATABASE_URL not set — Postgres write skipped.")
-except Exception as _db_err:
-    print(f"[WARN] Postgres write failed (CSV still saved): {_db_err}")
+if _db_available:
+    try:
+        init_tables()
+        if write_clean_invoices(df):
+            print("Postgres: clean_invoices table updated.")
+    except Exception as _db_err:
+        print(f"[WARN] Postgres write failed (CSV still saved): {_db_err}")
+else:
+    print("[INFO] DATABASE_URL not set — Postgres write skipped.")
 
 
 # ── Report ─────────────────────────────────────────────────────────────────────

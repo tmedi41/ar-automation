@@ -77,9 +77,21 @@ for d in (os.path.join(BASE_DIR, "database"),
 # ════════════════════════════════════════════════════════════════════════════
 if _db_available:
     _ci = _db.read_clean_invoices()
-    df = _ci if (_ci is not None and not _ci.empty) else pd.read_csv(INPUT_FILE, dtype=str)
+    if _ci is not None and not _ci.empty:
+        df = _ci
+    elif os.path.exists(INPUT_FILE):
+        # DB table empty — use local CSV fallback (development only)
+        df = pd.read_csv(INPUT_FILE, dtype=str)
+    else:
+        print("[ERROR] clean_invoices table is empty and no CSV fallback found. "
+              "Upload ar_aging.csv via the dashboard first.")
+        sys.exit(1)
 else:
-    df = pd.read_csv(INPUT_FILE, dtype=str)
+    if os.path.exists(INPUT_FILE):
+        df = pd.read_csv(INPUT_FILE, dtype=str)
+    else:
+        print(f"[ERROR] Input file not found: {INPUT_FILE}")
+        sys.exit(1)
 df["Balance"]      = pd.to_numeric(df["Balance"], errors="coerce").fillna(0.0)
 df["Due_Date"]     = pd.to_datetime(df["Due_Date"],     format="%m/%d/%Y", errors="coerce")
 df["Invoice_Date"] = pd.to_datetime(df["Invoice_Date"], format="%m/%d/%Y", errors="coerce")
