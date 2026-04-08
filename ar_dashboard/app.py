@@ -1122,6 +1122,22 @@ def scan_inbox():
         sender_addr  = (from_info.get("address") or "").strip().lower()
         sender_name  = (from_info.get("name")    or "").strip()
         received_raw = (msg.get("receivedDateTime") or "")
+
+        # If the display name is missing or is itself an email address, derive
+        # a readable company name from the sender's domain.
+        # e.g. "daniel@excell7.com" → "Excell7"
+        #      "ap@bright-horizons.net" → "Bright Horizons"
+        if not sender_name or "@" in sender_name:
+            _src = sender_name if "@" in sender_name else sender_addr
+            _local, _, _domain_full = _src.partition("@")
+            _domain_label = _domain_full.split(".")[0] if _domain_full else ""
+            # Generic local parts → prefer the domain label as the company name
+            _GENERIC = {"info", "contact", "mail", "hello", "support", "sales",
+                        "admin", "billing", "accounts", "accounting", "ap", "ar",
+                        "office", "reply", "noreply", "no-reply", "donotreply"}
+            _base = _domain_label if _local.lower() in _GENERIC else _local
+            sender_name = (_base.replace("-", " ").replace("_", " ").replace(".", " ")
+                                .title().strip() or _src)
         body_raw     = (msg.get("body", {}).get("content") or "").strip()
 
         # Skip emails we sent ourselves
