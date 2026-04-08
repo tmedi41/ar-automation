@@ -986,12 +986,38 @@ def scan_inbox():
     # ── Subject phrases that identify our outbound AR emails ─────────────────
     TRIGGER_PHRASES = ["Past Due Notice", "Upcoming Invoice Due", "Outstanding Balance"]
 
+    # ── Internal senders to always ignore ────────────────────────────────────
+    INTERNAL_SENDERS = {
+        "scottq@workingsolutions.net",
+        "kimberlys@workingsolutions.net",
+        "mikea@workingsolutions.net",
+        "rolfes@workingsolutions.net",
+        "contact@workingsolutions.net",
+        "orders@workingsolutions.net",
+    }
+
+    # ── Automated-response detection ──────────────────────────────────────────
+    AUTO_SUBJECT_PHRASES = [
+        "automatic reply", "auto reply", "out of office",
+        "ritm", "ticket", "delivered",
+    ]
+    AUTO_SENDER_NAME_PHRASES = [
+        "automated", "no-reply", "noreply",
+        "do not reply", "donotreply", "accounts payable",
+    ]
+    AUTO_BODY_PHRASES = [
+        "this is an automated response",
+        "this is an automatic reply",
+        "do not reply to this email",
+    ]
+
     # ── Anthropic client (optional — summaries degrade gracefully) ────────────
     api_key   = os.environ.get("ANTHROPIC_API_KEY", "")
     ai_client = anthropic.Anthropic(api_key=api_key) if api_key else None
 
-    logged:  list[dict] = []
-    skipped: int        = 0
+    logged:           list[dict] = []
+    skipped:          int        = 0   # duplicates already logged
+    skipped_filtered: int        = 0   # internal / automated
 
     for msg in messages:
         subject      = (msg.get("subject") or "").strip()
@@ -1005,8 +1031,24 @@ def scan_inbox():
         if sender_addr == sender_email.lower():
             continue
 
-        # Subject must match at least one trigger phrase
+        # Skip other internal senders
+        if sender_addr in INTERNAL_SENDERS:
+            skipped_filtered += 1
+            continue
+
+        # Skip automated responses (check subject, sender name, and body)
         subj_lower = subject.lower()
+        name_lower = sender_name.lower()
+        body_lower = body_raw.lower()[:1000]
+        if (
+            any(p in subj_lower for p in AUTO_SUBJECT_PHRASES)
+            or any(p in name_lower for p in AUTO_SENDER_NAME_PHRASES)
+            or any(p in body_lower for p in AUTO_BODY_PHRASES)
+        ):
+            skipped_filtered += 1
+            continue
+
+        # Subject must match at least one trigger phrase
         if not any(p.lower() in subj_lower for p in TRIGGER_PHRASES):
             continue
 
@@ -1064,10 +1106,11 @@ def scan_inbox():
         })
 
     return jsonify({
-        "ok":        True,
-        "new_count": len(logged),
-        "skipped":   skipped,
-        "items":     logged,
+        "ok":              True,
+        "new_count":       len(logged),
+        "skipped":         skipped,
+        "skipped_filtered": skipped_filtered,
+        "items":           logged,
     })
 
 

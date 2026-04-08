@@ -106,15 +106,17 @@ function resolveScanModal(data) {
     return;
   }
 
-  const n = data.new_count || 0;
-  const s = data.skipped   || 0;
+  const n  = data.new_count        || 0;
+  const s  = data.skipped          || 0;
+  const sf = data.skipped_filtered || 0;
 
   scanModalTitle.textContent = n > 0
     ? `${n} new ${n === 1 ? "reply" : "replies"} logged`
     : "No new replies found";
 
   let subMsg = "";
-  if (s > 0) subMsg += `${s} already logged (skipped). `;
+  if (sf > 0) subMsg += `${sf} filtered out (internal / automated). `;
+  if (s  > 0) subMsg += `${s} already logged (skipped). `;
   if (n === 0) subMsg += "No new customer replies detected in the last 7 days.";
   scanModalMsg.textContent = subMsg.trim();
 
