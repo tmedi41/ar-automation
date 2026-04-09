@@ -291,6 +291,111 @@ btnSave.addEventListener("click", async () => {
   }
 });
 
+// ── Payment History charts ────────────────────────────────────────────────
+let phChartsInit = false;
+
+function initPaymentCharts() {
+  if (phChartsInit) return;
+  phChartsInit = true;
+
+  const BEIGE_GRID = "rgba(0,0,0,0.07)";
+  const TICK_COLOR = "#888780";
+  const FONT       = { family: "'DM Sans', sans-serif", size: 12 };
+
+  const baseScales = {
+    x: { grid: { color: BEIGE_GRID }, ticks: { color: TICK_COLOR, font: FONT } },
+    y: { grid: { color: BEIGE_GRID }, ticks: { color: TICK_COLOR, font: FONT }, beginAtZero: true },
+  };
+
+  // Past Due Trend — bar chart (8 weeks)
+  const trendEl = document.getElementById("chart-past-due-trend");
+  if (trendEl && typeof PH_WEEKLY !== "undefined" && PH_WEEKLY.length) {
+    new Chart(trendEl, {
+      type: "bar",
+      data: {
+        labels:   PH_WEEKLY.map(d => d.label),
+        datasets: [{
+          label:           "Past Due Contacts",
+          data:            PH_WEEKLY.map(d => d.count),
+          backgroundColor: PH_WEEKLY.map((d, i) =>
+            i === PH_WEEKLY.length - 1 ? "#D85A30" : "rgba(216,90,48,0.35)"
+          ),
+          borderRadius:    4,
+          borderSkipped:   false,
+        }],
+      },
+      options: {
+        responsive:          true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: { label: ctx => ` ${ctx.parsed.y} contact${ctx.parsed.y !== 1 ? "s" : ""}` },
+          },
+        },
+        scales: {
+          x: { ...baseScales.x, grid: { display: false } },
+          y: { ...baseScales.y, ticks: { ...baseScales.y.ticks, stepSize: 1 } },
+        },
+      },
+    });
+  }
+
+  // Top Overdue Accounts — horizontal bar chart
+  const overdueEl = document.getElementById("chart-top-overdue");
+  if (overdueEl && typeof PH_OVERDUE !== "undefined" && PH_OVERDUE.length) {
+    const labels = PH_OVERDUE.map(d =>
+      d.customer.length > 22 ? d.customer.slice(0, 22) + "\u2026" : d.customer
+    );
+    const colors = PH_OVERDUE.map(d =>
+      d.type === "ESCALATION" ? "#D85A30" : "#E8A838"
+    );
+    new Chart(overdueEl, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [{
+          label:           "Balance Owed",
+          data:            PH_OVERDUE.map(d => d.balance),
+          backgroundColor: colors,
+          borderRadius:    4,
+          borderSkipped:   false,
+        }],
+      },
+      options: {
+        indexAxis:           "y",
+        responsive:          true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => ` $${ctx.parsed.x.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            ...baseScales.x,
+            ticks: {
+              ...baseScales.x.ticks,
+              callback: v => "$" + (v >= 1000 ? (v / 1000).toFixed(0) + "k" : v),
+            },
+          },
+          y: { ...baseScales.y, grid: { display: false } },
+        },
+      },
+    });
+  }
+}
+
+// Trigger chart init when Payment History tab is first opened
+document.querySelectorAll(".nav-tab").forEach(btn => {
+  if (btn.dataset.tab === "payment") {
+    btn.addEventListener("click", initPaymentCharts);
+  }
+});
+
 // ── Delete logged reply ────────────────────────────────────────────────────
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest(".btn-delete-reply");

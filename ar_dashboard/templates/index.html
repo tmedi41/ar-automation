@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AR Collections Dashboard</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
 </head>
 <body>
 
@@ -368,10 +369,91 @@
 
   <!-- ── Payment History tab ───────────────────────────────────────────── -->
   <div id="panel-payment" class="tab-panel">
-    <div class="card placeholder-card">
-      <div class="placeholder-text">Payment History — coming soon</div>
+
+    <!-- Metric cards -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Total Collected This Month</div>
+        <div class="metric-value payments-value">{{ payment_data.total_collected_month }}</div>
+        <div class="metric-sub">{{ payment_data.paid_count_month }} invoice{{ 's' if payment_data.paid_count_month != 1 else '' }} marked paid</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Past Due Trend</div>
+        <div class="metric-value {% if payment_data.past_due_trend == 'up' %}danger{% elif payment_data.past_due_trend == 'down' %}payments-value{% endif %}">
+          {% if payment_data.past_due_trend == 'up' %}&#8593;{% elif payment_data.past_due_trend == 'down' %}&#8595;{% else %}&rarr;{% endif %}
+          {{ payment_data.past_due_delta }}
+        </div>
+        <div class="metric-sub">vs 7 days ago</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Avg Days to Pay</div>
+        <div class="metric-value">{{ payment_data.avg_days_to_pay }}</div>
+        <div class="metric-sub">From first contact to paid</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Escalation Rate</div>
+        <div class="metric-value {% if payment_data.escalation_rate|replace('%','') | int > 20 %}danger{% endif %}">{{ payment_data.escalation_rate }}</div>
+        <div class="metric-sub">Of all contacts</div>
+      </div>
     </div>
+
+    <!-- Charts row -->
+    <div class="ph-charts-row">
+      <div class="card ph-chart-card">
+        <div class="card-header">
+          <div class="section-title">Past Due Contacts &mdash; 8 Week Trend</div>
+        </div>
+        <div class="ph-chart-wrap">
+          <canvas id="chart-past-due-trend"></canvas>
+        </div>
+      </div>
+      <div class="card ph-chart-card">
+        <div class="card-header">
+          <div class="section-title">Top Overdue Accounts</div>
+        </div>
+        <div class="ph-chart-wrap">
+          <canvas id="chart-top-overdue"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Payments Detected table -->
+    <div class="card">
+      <div class="card-header">
+        <div class="section-title">Payments Detected</div>
+      </div>
+      {% if payment_data.payments %}
+      <table class="ph-payments-table">
+        <thead>
+          <tr>
+            <th>Date Paid</th>
+            <th>Invoice</th>
+            <th>Customer</th>
+            <th class="ph-amount-col">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in payment_data.payments %}
+          <tr>
+            <td class="ph-date">{{ p.date_paid }}</td>
+            <td class="ph-invoice">{{ p.invoice }}</td>
+            <td class="ph-customer">{{ p.customer }}</td>
+            <td class="ph-amount">{{ p.amount }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p style="color:#888780; font-size:13px">No payments logged yet. Mark invoices as Paid in the collections log to see them here.</p>
+      {% endif %}
+    </div>
+
   </div><!-- /panel-payment -->
+
+  <script>
+    const PH_WEEKLY  = {{ payment_data.weekly_chart  | tojson }};
+    const PH_OVERDUE = {{ payment_data.top_overdue   | tojson }};
+  </script>
 
 </main>
 

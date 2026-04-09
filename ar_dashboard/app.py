@@ -666,6 +666,168 @@ def enrich_last_updates(past_due_accounts: list) -> list:
     return past_due_accounts
 
 
+# ── Payment History data ──────────────────────────────────────────────────────
+
+def get_payment_history_data() -> dict:
+    """Build all Payment History tab data from PostgreSQL — no file reads."""
+    today = datetime.today()
+    month_start_ts = pd.Timestamp(today.replace(day=1).date())
+    tomorrow_ts    = pd.Timestamp(today.date() + timedelta(days=1))
+    today_ts       = pd.Timestamp(today.date())
+    ago7_ts        = pd.Timestamp(today.date() - timedelta(days=7))
+
+    result = {
+        "total_collected_month": "$0.00",
+        "paid_count_month":      0,
+        "past_due_current":      0.0,
+        "past_due_7d_ago":       0.0,
+        "past_due_trend":        "flat",
+        "past_due_delta":        "$0.00",
+        "avg_days_to_pay":       "\u2014",
+        "escalation_rate":       "0%",
+        "weekly_chart":          [],
+        "payments":              [],
+        "top_overdue":           [],
+    }
+
+    log = _get_collections_log_df()
+    ci  = None
+    if DATABASE_URL and _db_read_clean_invoices:
+        try:
+            ci = _db_read_clean_invoices()
+        except Exception as e:
+            print(f"[ERROR] get_payment_history_data: {e}")
+
+    # Pre-compute parsed date columns once
+    if not log.empty:
+        log = log.copy()
+        log["_paid_dt"] = pd.to_datetime(log.get("Paid_Date",       ""), format="%m/%d/%Y", errors="coerce")
+        log["_sent_dt"] = pd.to_datetime(log.get("Email_Sent_Date", ""), format="%m/%d/%Y", errors="coerce")
+        log["_etype"]   = log["Email_Type"].str.upper().str.strip()
+
+    ci_balance_map: dict = {}
+    if ci is not None and not ci.empty:
+        ci_balance_map = {
+            str(r["Invoice"]).strip(): float(r["Balance"] or 0)
+            for _, r in ci.iterrows()
+        }
+
+    # ── Total Collected This Month ────────────────────────────────────────
+    if not log.empty:
+        paid_mask = (
+            (log["Status"].str.strip() == "Paid")
+            & log["_paid_dt"].notna()
+            & (log["_paid_dt"] >= month_start_ts)
+            & (log["_paid_dt"] < tomorrow_ts)
+        )
+        paid_this_month = log[paid_mask]
+        result["paid_count_month"] = len(paid_this_month)
+        total_collected = sum(
+            ci_balance_map.get(str(inv).strip(), 0.0)
+            for inv in paid_this_month["Invoice"]
+        )
+        result["total_collected_month"] = f"${total_collected:,.2f}"
+
+    # ── Past Due Trend (current vs 7 days ago from clean_invoices) ────────
+    if ci is not None and not ci.empty:
+        ci_w = ci.copy()
+        ci_w["Balance"] = pd.to_numeric(ci_w["Balance"], errors="coerce").fillna(0.0)
+        ci_w["_due"]    = pd.to_datetime(ci_w["Due_Date"], format="%m/%d/%Y", errors="coerce")
+        current_pd = float(ci_w[ci_w["_due"].notna() & (ci_w["_due"] < today_ts) & (ci_w["Balance"] > 0)]["Balance"].sum())
+        ago7_pd    = float(ci_w[ci_w["_due"].notna() & (ci_w["_due"] < ago7_ts)  & (ci_w["Balance"] > 0)]["Balance"].sum())
+        delta      = current_pd - ago7_pd
+        result["past_due_current"] = current_pd
+        result["past_due_7d_ago"]  = ago7_pd
+        result["past_due_delta"]   = f"${abs(delta):,.2f}"
+        result["past_due_trend"]   = "up" if delta > 0.01 else ("down" if delta < -0.01 else "flat")
+
+    # ── Avg Days to Pay (email_sent_date → paid_date) ─────────────────────
+    if not log.empty:
+        paid_log = log[(log["Status"].str.strip() == "Paid") & log["_paid_dt"].notna() & log["_sent_dt"].notna()].copy()
+        if not paid_log.empty:
+            days_series = (paid_log["_paid_dt"] - paid_log["_sent_dt"]).dt.days
+            days_series = days_series[days_series >= 0]
+            if not days_series.empty:
+                result["avg_days_to_pay"] = f"{days_series.mean():.0f}d"
+
+    # ── Escalation Rate ───────────────────────────────────────────────────
+    if not log.empty:
+        has_customer = log["Customer"].str.strip().ne("")
+        total        = int(has_customer.sum())
+        escalations  = int((has_customer & (log["_etype"] == "ESCALATION")).sum())
+        if total > 0:
+            result["escalation_rate"] = f"{escalations / total * 100:.0f}%"
+
+    # ── Weekly Past Due Activity Chart (8 weeks, contacts per week) ───────
+    if not log.empty:
+        weeks = []
+        for i in range(7, -1, -1):
+            w_end   = today.date() - timedelta(days=i * 7)
+            w_start = w_end - timedelta(days=6)
+            mask = (
+                log["_sent_dt"].notna()
+                & (log["_sent_dt"] >= pd.Timestamp(w_start))
+                & (log["_sent_dt"] <  pd.Timestamp(w_end + timedelta(days=1)))
+                & log["_etype"].isin(["PAST_DUE", "ESCALATION"])
+            )
+            weeks.append({
+                "label": w_start.strftime("%-m/%-d"),
+                "count": int(mask.sum()),
+            })
+        result["weekly_chart"] = weeks
+
+    # ── Payments Detected (last 20, with best-effort amount) ──────────────
+    if not log.empty:
+        paid = (
+            log[(log["Status"].str.strip() == "Paid") & log["_paid_dt"].notna()]
+            .sort_values("_paid_dt", ascending=False)
+            .head(20)
+        )
+        payments = []
+        for _, row in paid.iterrows():
+            inv = str(row.get("Invoice", "")).strip()
+            bal = ci_balance_map.get(inv)
+            payments.append({
+                "customer":  row.get("Customer", ""),
+                "invoice":   inv,
+                "amount":    f"${bal:,.2f}" if bal is not None else "\u2014",
+                "date_paid": row["_paid_dt"].strftime("%m/%d/%Y"),
+            })
+        result["payments"] = payments
+
+    # ── Top Overdue Accounts (top 8 by balance, color by type) ───────────
+    if ci is not None and not ci.empty:
+        ci_w = ci.copy()
+        ci_w["Balance"] = pd.to_numeric(ci_w["Balance"], errors="coerce").fillna(0.0)
+        ci_w["_due"]    = pd.to_datetime(ci_w["Due_Date"], format="%m/%d/%Y", errors="coerce")
+        past_due_ci     = ci_w[ci_w["_due"].notna() & (ci_w["_due"] < today_ts) & (ci_w["Balance"] > 0)]
+
+        # Best email_type per customer from collections_log
+        _SEV = {"PRE_DUE": 0, "PAST_DUE": 1, "ESCALATION": 2}
+        customer_etype: dict = {}
+        if not log.empty:
+            for cust, grp in log.groupby("Customer"):
+                valid = [t for t in grp["_etype"] if t in _SEV]
+                if valid:
+                    customer_etype[cust] = max(valid, key=lambda t: _SEV[t])
+
+        overdue = []
+        for customer, grp in past_due_ci.groupby("Customer", sort=False):
+            total_bal = float(grp["Balance"].sum())
+            if total_bal <= 0:
+                continue
+            overdue.append({
+                "customer": customer,
+                "balance":  round(total_bal, 2),
+                "type":     customer_etype.get(customer, "PAST_DUE"),
+            })
+
+        overdue.sort(key=lambda x: -x["balance"])
+        result["top_overdue"] = overdue[:8]
+
+    return result
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @app.route("/login", methods=["GET", "POST"])
@@ -699,6 +861,7 @@ def index():
         replies=get_recent_replies(),
         weekly_data=weekly_data,
         customer_replies=get_customer_replies(),
+        payment_data=get_payment_history_data(),
     )
 
 
