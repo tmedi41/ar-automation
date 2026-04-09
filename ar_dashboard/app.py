@@ -476,7 +476,7 @@ def get_priority_customers() -> list[dict]:
         if total_bal <= 0:
             continue
         max_dpd   = int(grp["Days_Past_Due"].max())
-        cats      = [c for c in grp["Category"].tolist() if c]
+        cats      = [c for c in grp["Category"].tolist() if c and c in _SEVERITY]
         etype     = max(cats, key=lambda c: _SEVERITY[c]) if cats else ""
         rows.append({
             "customer":    customer,
