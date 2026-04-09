@@ -527,131 +527,105 @@ def get_customer_replies() -> list:
     ).to_dict(orient="records")
 
 
-def get_weekly_snapshot() -> str:
-    path = os.path.join(BASE_DIR, "reports", "weekly_collections_update.txt")
-    if not os.path.exists(path):
-        return "(no weekly report found)"
-    return open(path, encoding="utf-8").read()
-
-
 def parse_weekly_report() -> dict:
-    path = os.path.join(BASE_DIR, "reports", "weekly_collections_update.txt")
+    """Build weekly report data directly from PostgreSQL — never reads from files."""
+    today      = datetime.today()
+    week_start = today.date() - timedelta(days=6)
+
     result = {
-        "generated": "", "week_of": "",
-        "total_contacts": 0, "pre_due": 0, "past_due_notices": 0, "escalations": 0,
-        "replies": [], "past_due_accounts": [],
+        "generated":         today.strftime("%B %d, %Y"),
+        "week_of":           f"{week_start.strftime('%B %-d')} \u2013 {today.strftime('%B %-d, %Y')}",
+        "total_contacts":    0,
+        "pre_due":           0,
+        "past_due_notices":  0,
+        "escalations":       0,
+        "replies":           [],
+        "past_due_accounts": [],
     }
-    if not os.path.exists(path):
-        return result
 
-    lines = open(path, encoding="utf-8").read().splitlines()
+    # ── Metrics from collections_log ──────────────────────────────────────────
+    log = _get_collections_log_df()
+    if not log.empty:
+        week_start_ts = pd.Timestamp(week_start)
+        tomorrow_ts   = pd.Timestamp(today.date() + timedelta(days=1))
+        log["_sent_dt"] = pd.to_datetime(
+            log.get("Email_Sent_Date", ""), format="%m/%d/%Y", errors="coerce"
+        )
+        week_mask = (
+            log["_sent_dt"].notna()
+            & (log["_sent_dt"] >= week_start_ts)
+            & (log["_sent_dt"] < tomorrow_ts)
+        )
+        week_log   = log[week_mask]
+        email_type = week_log["Email_Type"].str.upper().str.strip()
 
-    # Header
-    for line in lines:
-        m = re.search(r"Generated\s*:\s*(.+)", line)
-        if m:
-            result["generated"] = m.group(1).strip()
-        m = re.search(r"Week of\s*:\s*(.+)", line)
-        if m:
-            result["week_of"] = m.group(1).strip()
+        result["total_contacts"]   = int(week_log["Customer"].nunique())
+        result["pre_due"]          = int((email_type == "PRE_DUE").sum())
+        result["past_due_notices"] = int((email_type == "PAST_DUE").sum())
+        result["escalations"]      = int((email_type == "ESCALATION").sum())
 
-    # Contact summary
-    for line in lines:
-        m = re.search(r"Total contacts\s+(\d+)", line)
-        if m:
-            result["total_contacts"] = int(m.group(1))
-        m = re.search(r"Pre-due reminders\s+(\d+)", line)
-        if m:
-            result["pre_due"] = int(m.group(1))
-        m = re.search(r"Past-due notices\s+(\d+)", line)
-        if m:
-            result["past_due_notices"] = int(m.group(1))
-        m = re.search(r"Escalations\s+(\d+)", line)
-        if m:
-            result["escalations"] = int(m.group(1))
-
-    # Customer replies & notes (fixed-width columns: date[2:14], invoice[15:25], customer[26:60], notes[61:])
-    in_replies = False
-    current_reply = None
-    for line in lines:
-        if "CUSTOMER REPLIES & NOTES" in line:
-            in_replies = True
-            continue
-        if in_replies and "PAYMENTS LOGGED" in line:
-            if current_reply:
-                result["replies"].append(current_reply)
-            break
-        if not in_replies:
-            continue
-        if re.match(r'\s*[-=]+\s*$', line) or re.match(r'\s*Date\s+Invoice', line):
-            continue
-        if not line.strip():
-            continue
-
-        if re.match(r'  \d{2}/\d{2}/\d{4}', line):
-            if current_reply:
-                result["replies"].append(current_reply)
-            current_reply = {
-                "date":     line[2:14].strip(),
-                "invoice":  line[15:25].strip(),
-                "customer": line[26:60].strip(),
-                "notes":    line[61:].strip() if len(line) > 61 else "",
+    # ── Customer replies from customer_interactions ───────────────────────────
+    df_int = _get_interactions_df()
+    if not df_int.empty:
+        df_int = df_int[df_int["Notes"].str.strip() != ""].copy()
+        df_int["_dt"] = pd.to_datetime(df_int["Date"], errors="coerce")
+        df_int = df_int.dropna(subset=["_dt"]).sort_values("_dt", ascending=False)
+        result["replies"] = [
+            {
+                "date":     row["_dt"].strftime("%m/%d/%Y"),
+                "invoice":  row.get("Invoice", ""),
+                "customer": row["Customer"],
+                "notes":    row.get("Notes", ""),
             }
-        elif current_reply and len(line) > 61 and not line[2:61].strip():
-            current_reply["notes"] += " " + line[61:].strip()
+            for _, row in df_int.iterrows()
+        ]
 
-    # Past due accounts
-    in_accounts = False
-    current_account = None
-    account_phase = None
+    # ── Past due accounts from clean_invoices ─────────────────────────────────
+    ci = None
+    if DATABASE_URL and _db_read_clean_invoices:
+        try:
+            ci = _db_read_clean_invoices()
+        except Exception as e:
+            print(f"[ERROR] parse_weekly_report: clean_invoices read failed: {e}")
 
-    for line in lines:
-        if "TOP 10 PAST-DUE ACCOUNTS" in line:
-            in_accounts = True
-            continue
-        if not in_accounts:
-            continue
+    if ci is not None and not ci.empty:
+        ci["Balance"] = pd.to_numeric(ci["Balance"], errors="coerce").fillna(0.0)
+        ci["_due"]    = pd.to_datetime(ci["Due_Date"], format="%m/%d/%Y", errors="coerce")
+        today_ts      = pd.Timestamp(today.date())
+        past_due      = ci[
+            ci["_due"].notna() & (ci["_due"] < today_ts) & (ci["Balance"] > 0)
+        ].copy()
+        past_due["Days_Past_Due"] = (today_ts - past_due["_due"]).dt.days.astype(int)
 
-        stripped = line.strip()
-        m = re.match(r'(\d+)\.\s+(.+?)\s+[—–]\s+\$([0-9,]+\.?\d*)\s+[—–]\s+(\d+)\s+days past due', stripped)
-        if m:
-            if current_account:
-                result["past_due_accounts"].append(current_account)
-            current_account = {
-                "rank": int(m.group(1)),
-                "customer": m.group(2).strip(),
-                "total": f"${float(m.group(3).replace(',', '')):,.2f}",
-                "days_past_due": int(m.group(4)),
-                "invoices": [],
-                "last_update": "",
-            }
-            account_phase = None
-            continue
+        accounts = []
+        for customer, grp in past_due.groupby("Customer", sort=False):
+            total_bal = grp["Balance"].sum()
+            if total_bal <= 0:
+                continue
+            max_dpd  = int(grp["Days_Past_Due"].max())
+            invoices = [
+                {
+                    "number": str(row["Invoice"]),
+                    "amount": f"${row['Balance']:,.2f}",
+                    "days":   int(row["Days_Past_Due"]),
+                }
+                for _, row in grp.iterrows()
+            ]
+            accounts.append({
+                "rank":         0,
+                "customer":     customer,
+                "total":        f"${total_bal:,.2f}",
+                "total_raw":    total_bal,
+                "days_past_due": max_dpd,
+                "invoices":     invoices,
+                "last_update":  "",
+            })
 
-        if current_account is None:
-            continue
-        if stripped == "Invoices":
-            account_phase = "invoices"
-            continue
-        if stripped == "Last Update":
-            account_phase = "last_update"
-            continue
-        if re.match(r'^[-=]+$', stripped) or not stripped:
-            continue
-
-        if account_phase == "invoices":
-            m = re.match(r'(\d+)\s+[—–]\s+\$([0-9,]+\.?\d*)\s+[—–]\s+(\d+)\s+days', stripped)
-            if m:
-                current_account["invoices"].append({
-                    "number": m.group(1),
-                    "amount": f"${float(m.group(2).replace(',', '')):,.2f}",
-                    "days": int(m.group(3)),
-                })
-        elif account_phase == "last_update":
-            current_account["last_update"] = stripped
-
-    if current_account:
-        result["past_due_accounts"].append(current_account)
+        accounts.sort(key=lambda a: -a["total_raw"])
+        for i, acct in enumerate(accounts[:10], 1):
+            acct["rank"] = i
+            del acct["total_raw"]
+        result["past_due_accounts"] = accounts[:10]
 
     return result
 
@@ -723,7 +697,6 @@ def index():
         metrics=get_metrics(),
         priority=get_priority_customers(),
         replies=get_recent_replies(),
-        weekly=get_weekly_snapshot(),
         weekly_data=weekly_data,
         customer_replies=get_customer_replies(),
     )
