@@ -274,8 +274,10 @@ btnSave.addEventListener("click", async () => {
 
     if (data.ok) {
       summaryCard.style.display = "none";
-      showReplyStatus("✓ Reply logged to customer_interactions.csv.", "success");
-      showToast("Reply logged successfully.", "success");
+      const n = data.logged || 1;
+      const entryLabel = n === 1 ? "1 entry" : `${n} entries`;
+      showReplyStatus(`✓ Reply logged (${entryLabel} saved).`, "success");
+      showToast(`Reply logged — ${entryLabel} saved.`, "success");
       // reset form
       document.getElementById("reply-customer").value = "";
       document.getElementById("reply-invoice").value  = "";

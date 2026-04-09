@@ -973,15 +973,17 @@ def summarize_reply():
 @_login_required
 def log_reply():
     data     = request.get_json()
-    invoice  = (data.get("invoice")  or "").strip()
+    invoices = (data.get("invoice")  or "").strip()
     customer = (data.get("customer") or "").strip()
     summary  = (data.get("summary")  or "").strip()
-    if not invoice or not summary:
+    if not invoices or not summary:
         return jsonify({"ok": False, "error": "Invoice and summary are required."})
 
     today = datetime.today().strftime("%Y-%m-%d")
-    _append_interaction(today, customer, invoice, "Customer Reply", summary)
-    return jsonify({"ok": True})
+    invoice_list = [inv.strip() for inv in invoices.split(",") if inv.strip()]
+    for inv in invoice_list:
+        _append_interaction(today, customer, inv, "Customer Reply", summary)
+    return jsonify({"ok": True, "logged": len(invoice_list)})
 
 
 @app.route("/delete-reply", methods=["POST"])
