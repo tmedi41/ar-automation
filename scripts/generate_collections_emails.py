@@ -617,6 +617,7 @@ for customer, group in actionable.groupby("Customer", sort=True):
             "Status":          "Email Sent",
             "Email_Type":      row["Category"],
             "Notes":           "",
+            "Balance":         float(row["Balance"]) if pd.notna(row.get("Balance")) else None,
         })
 
 

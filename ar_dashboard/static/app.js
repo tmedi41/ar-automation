@@ -12,13 +12,21 @@ function showToast(msg, type = "success") {
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────
+function activateTab(tabName) {
+  document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+  const btn = document.querySelector(`.nav-tab[data-tab="${tabName}"]`);
+  const panel = document.getElementById("panel-" + tabName);
+  if (btn) btn.classList.add("active");
+  if (panel) panel.classList.add("active");
+  if (tabName === "payment") initPaymentCharts();
+}
+
 document.querySelectorAll(".nav-tab").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
-    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
-    btn.classList.add("active");
-    const panel = document.getElementById("panel-" + btn.dataset.tab);
-    if (panel) panel.classList.add("active");
+    const tabName = btn.dataset.tab;
+    location.hash = tabName;
+    activateTab(tabName);
   });
 });
 
@@ -391,12 +399,6 @@ function initPaymentCharts() {
   }
 }
 
-// Trigger chart init when Payment History tab is first opened
-document.querySelectorAll(".nav-tab").forEach(btn => {
-  if (btn.dataset.tab === "payment") {
-    btn.addEventListener("click", initPaymentCharts);
-  }
-});
 
 // ── Delete logged reply ────────────────────────────────────────────────────
 document.addEventListener("click", async (e) => {
@@ -435,3 +437,12 @@ document.addEventListener("click", async (e) => {
     showToast("Network error — " + err, "error");
   }
 });
+
+// ── Restore active tab from URL hash on page load ─────────────────────────
+(function () {
+  const hash = location.hash.replace("#", "");
+  const valid = ["overview", "upload", "replies", "weekly", "payment"];
+  if (hash && valid.includes(hash)) {
+    activateTab(hash);
+  }
+})();

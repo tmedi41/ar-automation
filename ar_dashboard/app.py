@@ -712,6 +712,15 @@ def get_payment_history_data() -> dict:
             for _, r in ci.iterrows()
         }
 
+    # Build a fallback balance map from collections_log (balance stored at time of first contact)
+    # Use the first non-null balance per invoice (oldest log entry where balance was recorded)
+    log_balance_map: dict = {}
+    if not log.empty and "Balance" in log.columns:
+        for inv, grp in log.groupby("Invoice"):
+            valid = pd.to_numeric(grp["Balance"], errors="coerce").dropna()
+            if not valid.empty:
+                log_balance_map[str(inv).strip()] = float(valid.iloc[0])
+
     # ── Total Collected This Month ────────────────────────────────────────
     if not log.empty:
         paid_mask = (
@@ -722,10 +731,12 @@ def get_payment_history_data() -> dict:
         )
         paid_this_month = log[paid_mask]
         result["paid_count_month"] = len(paid_this_month)
-        total_collected = sum(
-            ci_balance_map.get(str(inv).strip(), 0.0)
-            for inv in paid_this_month["Invoice"]
-        )
+        total_collected = 0.0
+        for inv in paid_this_month["Invoice"]:
+            inv_str = str(inv).strip()
+            # Prefer current AR balance; fall back to balance recorded in the log
+            amount = ci_balance_map.get(inv_str) or log_balance_map.get(inv_str, 0.0)
+            total_collected += amount
         result["total_collected_month"] = f"${total_collected:,.2f}"
 
     # ── Past Due Trend (current vs 7 days ago from clean_invoices) ────────
@@ -786,7 +797,7 @@ def get_payment_history_data() -> dict:
         payments = []
         for _, row in paid.iterrows():
             inv = str(row.get("Invoice", "")).strip()
-            bal = ci_balance_map.get(inv)
+            bal = ci_balance_map.get(inv) or log_balance_map.get(inv) or None
             payments.append({
                 "customer":  row.get("Customer", ""),
                 "invoice":   inv,

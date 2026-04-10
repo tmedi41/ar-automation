@@ -23,7 +23,7 @@ load_dotenv(os.path.join(_BASE_DIR, ".env"), override=True)
 
 LOG_COLUMNS = [
     "Customer", "Invoice", "Email_Sent_Date", "Followup_Date",
-    "Status", "Paid_Date", "Email_Type", "Notes",
+    "Status", "Paid_Date", "Email_Type", "Notes", "Balance",
 ]
 
 CLEAN_INV_COLUMNS = ["Customer", "Invoice", "Invoice_Date", "Due_Date", "Balance", "Email"]
@@ -75,8 +75,14 @@ def init_tables():
                         paid_date       TEXT NOT NULL DEFAULT '',
                         email_type      TEXT NOT NULL DEFAULT '',
                         notes           TEXT NOT NULL DEFAULT '',
+                        balance         NUMERIC(14, 2),
                         created_at      TIMESTAMP DEFAULT NOW()
                     )
+                """)
+                # Migration: add balance column if the table was created before it was added
+                cur.execute("""
+                    ALTER TABLE collections_log
+                    ADD COLUMN IF NOT EXISTS balance NUMERIC(14, 2)
                 """)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS clean_invoices (
@@ -177,14 +183,18 @@ def read_collections_log() -> pd.DataFrame | None:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT customer, invoice, email_sent_date, followup_date,
-                       status, paid_date, email_type, notes
+                       status, paid_date, email_type, notes, balance
                 FROM collections_log
                 ORDER BY id
             """)
             rows = cur.fetchall()
         if not rows:
             return pd.DataFrame(columns=LOG_COLUMNS)
-        return pd.DataFrame(rows, columns=LOG_COLUMNS).fillna("")
+        df = pd.DataFrame(rows, columns=LOG_COLUMNS)
+        for col in ("Customer", "Invoice", "Email_Sent_Date", "Followup_Date",
+                    "Status", "Paid_Date", "Email_Type", "Notes"):
+            df[col] = df[col].fillna("")
+        return df
     finally:
         conn.close()
 
@@ -197,8 +207,14 @@ def append_log_rows(rows: list[dict]) -> None:
     if conn is None:
         return
     try:
-        data = [
-            (
+        data = []
+        for r in rows:
+            bal = r.get("Balance")
+            try:
+                bal = float(bal) if bal is not None and str(bal) not in ("", "nan", "None") else None
+            except (TypeError, ValueError):
+                bal = None
+            data.append((
                 r.get("Customer", ""),
                 r.get("Invoice", ""),
                 r.get("Email_Sent_Date", ""),
@@ -207,15 +223,14 @@ def append_log_rows(rows: list[dict]) -> None:
                 r.get("Paid_Date", ""),
                 r.get("Email_Type", ""),
                 r.get("Notes", ""),
-            )
-            for r in rows
-        ]
+                bal,
+            ))
         with conn:
             with conn.cursor() as cur:
                 psycopg2.extras.execute_values(cur, """
                     INSERT INTO collections_log
                         (customer, invoice, email_sent_date, followup_date,
-                         status, paid_date, email_type, notes)
+                         status, paid_date, email_type, notes, balance)
                     VALUES %s
                 """, data)
     finally:
