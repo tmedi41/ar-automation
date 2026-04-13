@@ -210,10 +210,13 @@ def append_log_rows(rows: list[dict]) -> None:
         data = []
         for r in rows:
             bal = r.get("Balance")
+            raw_bal = bal  # keep original for debug logging
             try:
                 bal = float(bal) if bal is not None and str(bal) not in ("", "nan", "None") else None
             except (TypeError, ValueError):
                 bal = None
+            print(f"[DEBUG] append_log_rows: Invoice={r.get('Invoice','?')} "
+                  f"raw_Balance={raw_bal!r} -> stored_balance={bal!r}")
             data.append((
                 r.get("Customer", ""),
                 r.get("Invoice", ""),

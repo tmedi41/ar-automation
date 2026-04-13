@@ -442,7 +442,20 @@ document.addEventListener("click", async (e) => {
 (function () {
   const hash = location.hash.replace("#", "");
   const valid = ["overview", "upload", "replies", "weekly", "payment"];
-  if (hash && valid.includes(hash)) {
+  if (!hash || !valid.includes(hash)) return;
+
+  if (hash === "payment") {
+    // Activate the panel immediately so the canvas is in the DOM and visible,
+    // but defer chart init by 100ms to ensure the canvas has rendered dimensions
+    // before Chart.js tries to measure it.
+    document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+    const btn   = document.querySelector('.nav-tab[data-tab="payment"]');
+    const panel = document.getElementById("panel-payment");
+    if (btn)   btn.classList.add("active");
+    if (panel) panel.classList.add("active");
+    setTimeout(initPaymentCharts, 100);
+  } else {
     activateTab(hash);
   }
 })();

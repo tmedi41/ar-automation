@@ -171,7 +171,7 @@ def _get_interactions_df() -> pd.DataFrame:
 def _get_collections_log_df() -> pd.DataFrame:
     """Return collections_log as a DataFrame from Postgres or CSV fallback."""
     _log_cols = ["Customer", "Invoice", "Email_Sent_Date", "Followup_Date",
-                 "Status", "Paid_Date", "Email_Type", "Notes"]
+                 "Status", "Paid_Date", "Email_Type", "Notes", "Balance"]
     if DATABASE_URL:
         try:
             conn = get_db_conn()
@@ -180,13 +180,16 @@ def _get_collections_log_df() -> pd.DataFrame:
                     with conn.cursor() as cur:
                         cur.execute(
                             "SELECT customer, invoice, email_sent_date, followup_date, "
-                            "status, paid_date, email_type, notes "
+                            "status, paid_date, email_type, notes, balance "
                             "FROM collections_log ORDER BY id"
                         )
                         rows = cur.fetchall()
                     if not rows:
                         return pd.DataFrame(columns=_log_cols)
-                    return pd.DataFrame(rows, columns=_log_cols).fillna("")
+                    df = pd.DataFrame(rows, columns=_log_cols)
+                    for col in _log_cols[:-1]:  # fill text cols; leave Balance as numeric
+                        df[col] = df[col].fillna("")
+                    return df
                 finally:
                     conn.close()
         except Exception as e:
