@@ -389,7 +389,7 @@ def get_metrics() -> dict:
     # ── Payments / contacts: read directly from collections_log (Postgres) ───
     log = _get_collections_log_df()
     if not log.empty:
-        week_start    = today.date() - timedelta(days=6)
+        week_start    = today.date() - timedelta(days=today.date().weekday())  # most recent Monday
         week_start_ts = pd.Timestamp(week_start)
         tomorrow_ts   = pd.Timestamp(today.date() + timedelta(days=1))
 
@@ -533,7 +533,7 @@ def get_customer_replies() -> list:
 def parse_weekly_report() -> dict:
     """Build weekly report data directly from PostgreSQL — never reads from files."""
     today      = datetime.today()
-    week_start = today.date() - timedelta(days=6)
+    week_start = today.date() - timedelta(days=today.date().weekday())  # most recent Monday
 
     result = {
         "generated":         today.strftime("%B %d, %Y"),
