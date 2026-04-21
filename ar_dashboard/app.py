@@ -965,7 +965,9 @@ def summarize_reply():
             max_tokens=60,
             system=(
                 "Summarize customer replies in one phrase, 15 words or fewer. "
-                "Capture only the key action or commitment — e.g. 'Will pay via ACH on April 6' or "
+                "Capture only the key action or commitment. "
+                "CRITICAL: If the reply mentions any dollar amount, you MUST include it verbatim in the summary "
+                "— e.g. 'Will pay $1,500 via ACH on April 6' or 'Check #92399 for $2,000 mailed 4/1/26' or "
                 "'Payment terms are 60 days, due April 7' or 'Invoice in system to be paid.' "
                 "No subjects, no pleasantries, no signatures, no filler. Just the key fact."
             ),
@@ -992,6 +994,29 @@ def log_reply():
     summary  = (data.get("summary")  or "").strip()
     if not invoices or not summary:
         return jsonify({"ok": False, "error": "Invoice and summary are required."})
+
+    # If the summary has no dollar amount, look up the balance from clean_invoices and append it
+    if "$" not in summary and DATABASE_URL:
+        try:
+            inv_keys = [inv.strip() for inv in invoices.split(",") if inv.strip()]
+            conn = get_db_conn()
+            if conn:
+                try:
+                    placeholders = ",".join(["%s"] * len(inv_keys))
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"SELECT COALESCE(SUM(balance), 0) FROM clean_invoices WHERE invoice IN ({placeholders})",
+                            inv_keys,
+                        )
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            balance = float(row[0])
+                            if balance > 0:
+                                summary = f"{summary} \u2014 ${balance:,.0f}"
+                finally:
+                    conn.close()
+        except Exception as _bal_err:
+            print(f"[WARN] log_reply: balance lookup failed: {_bal_err}")
 
     today = datetime.today().strftime("%Y-%m-%d")
     invoice_list = [inv.strip() for inv in invoices.split(",") if inv.strip()]

@@ -259,7 +259,15 @@ def mark_invoices_paid(invoice_nums: list[str], paid_date: str) -> int:
                      WHERE status != 'Paid'
                        AND invoice = ANY(%s)
                 """, (paid_date, invoice_nums))
-                return cur.rowcount
+                updated = cur.rowcount
+                cur.execute("""
+                    DELETE FROM customer_interactions
+                     WHERE invoice = ANY(%s)
+                """, (invoice_nums,))
+                deleted = cur.rowcount
+                if deleted:
+                    print(f"[INFO] mark_invoices_paid: removed {deleted} interaction(s) for paid invoice(s) {invoice_nums}")
+                return updated
     finally:
         conn.close()
 
