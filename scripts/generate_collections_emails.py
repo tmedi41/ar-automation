@@ -61,7 +61,8 @@ INTERACTIONS_FILE   = os.path.join(BASE_DIR, "data",    "customer_interactions.c
 
 LOG_COLUMNS   = ["Customer", "Invoice", "Email_Sent_Date", "Followup_Date",
                  "Status", "Paid_Date", "Email_Type", "Notes"]
-COOLDOWN_DAYS = 7
+COOLDOWN_DAYS        = 7
+PROMISE_LOOKBACK_DAYS = 14   # days back to scan interactions for payment promises
 # Severity order: higher index = more urgent
 SEVERITY      = {"PRE_DUE": 0, "PAST_DUE": 1, "ESCALATION": 2}
 
@@ -212,6 +213,71 @@ def is_recently_contacted(invoice_num: str) -> bool:
 def worst_category(categories) -> str:
     """Return the most severe category from a list."""
     return max(categories, key=lambda c: SEVERITY[c])
+
+
+# ── Payment-promise detection helpers ─────────────────────────────────────────
+_MONTH_MAP = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "jun": 6, "jul": 7, "aug": 8, "sep": 9, "sept": 9,
+    "oct": 10, "nov": 11, "dec": 12,
+}
+_SLASH_DATE_RE = re.compile(r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b')
+_MONTH_DATE_RE = re.compile(
+    r'\b(' + '|'.join(sorted(_MONTH_MAP, key=len, reverse=True)) + r')\.?'
+    r'\s+(\d{1,2})(?:/(\d{2,4}))?\b',
+    re.IGNORECASE,
+)
+
+
+def _extract_promised_dates(note: str) -> list:
+    """Return all dates found in a note string as pd.Timestamps."""
+    found = []
+    yr = today.year
+    for m in _SLASH_DATE_RE.finditer(note):
+        mo, dy, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y += 2000
+        try:
+            found.append(pd.Timestamp(year=y, month=mo, day=dy))
+        except ValueError:
+            pass
+    for m in _MONTH_DATE_RE.finditer(note):
+        mo = _MONTH_MAP.get(m.group(1).lower())
+        if not mo:
+            continue
+        dy = int(m.group(2))
+        if m.group(3):
+            y = int(m.group(3))
+            if y < 100:
+                y += 2000
+        else:
+            y = yr
+        try:
+            found.append(pd.Timestamp(year=y, month=mo, day=dy))
+        except ValueError:
+            pass
+    return found
+
+
+def has_payment_promise(customer: str, invoice_set: set) -> bool:
+    """True if any interaction note logged within PROMISE_LOOKBACK_DAYS for
+    this customer's invoices contains a payment date >= today."""
+    if ia_early.empty or not {"Customer", "Invoice", "Notes", "_dt"}.issubset(ia_early.columns):
+        return False
+    cutoff = today - pd.Timedelta(days=PROMISE_LOOKBACK_DAYS)
+    mask = (
+        (ia_early["Customer"].str.strip() == customer)
+        & (ia_early["Invoice"].str.strip().isin(invoice_set))
+        & (ia_early["_dt"] >= cutoff)
+    )
+    for _, row in ia_early[mask].iterrows():
+        note = str(row.get("Notes", "") or "")
+        if any(dt >= today for dt in _extract_promised_dates(note)):
+            return True
+    return False
 
 
 def _invoice_section(group: pd.DataFrame, days_col: str, days_label: str) -> str:
@@ -535,15 +601,31 @@ def create_outlook_draft(subject: str, html_body: str, raw_addresses: str) -> bo
         return False
 
 
+# ── Load interactions for payment-promise detection ───────────────────────────
+ia_early: pd.DataFrame = pd.DataFrame()
+try:
+    if _db_available:
+        _ia_raw = _db.read_customer_interactions()
+        ia_early = _ia_raw.fillna("") if _ia_raw is not None else pd.DataFrame()
+    elif os.path.exists(INTERACTIONS_FILE):
+        ia_early = pd.read_csv(INTERACTIONS_FILE, dtype=str).fillna("")
+    if not ia_early.empty and "Date" in ia_early.columns:
+        ia_early["_dt"] = pd.to_datetime(ia_early["Date"], errors="coerce")
+        ia_early = ia_early.dropna(subset=["_dt"]).reset_index(drop=True)
+except Exception:
+    pass
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # 4.  GENERATE EMAILS  +  UPDATE LOG
 # ════════════════════════════════════════════════════════════════════════════
-summary_rows    = []
-new_log_rows    = []
-emails_written  = 0
-emails_skipped  = 0
-outlook_drafts  = 0
-type_counts     = {"PRE_DUE": 0, "PAST_DUE": 0, "ESCALATION": 0}
+summary_rows             = []
+new_log_rows             = []
+emails_written           = 0
+emails_skipped           = 0
+skipped_payment_promised = 0
+outlook_drafts           = 0
+type_counts              = {"PRE_DUE": 0, "PAST_DUE": 0, "ESCALATION": 0}
 
 if GRAPH_AVAILABLE:
     print("[INFO] Microsoft Graph API configured — Outlook drafts will be created.")
@@ -575,6 +657,11 @@ for customer, group in actionable.groupby("Customer", sort=True):
     # Cooldown: skip if every invoice was recently contacted
     if not new_invoices:
         emails_skipped += 1
+        continue
+
+    # Payment promise: skip if a recent note contains a future payment date
+    if has_payment_promise(customer, set(group["Invoice"].astype(str).str.strip())):
+        skipped_payment_promised += 1
         continue
 
     # Build email text
@@ -760,6 +847,7 @@ print(f"  {'Pre-due reminders created':<38}  {type_counts['PRE_DUE']:>4}")
 print(f"  {'Past-due notices created':<38}  {type_counts['PAST_DUE']:>4}")
 print(f"  {'Escalation emails created':<38}  {type_counts['ESCALATION']:>4}")
 print(f"  {'Customers skipped (cooldown)':<38}  {emails_skipped:>4}")
+print(f"  {'Customers skipped (payment promised)':<38}  {skipped_payment_promised:>4}")
 print(thin_sep)
 print(f"  {'Total emails drafted':<38}  {emails_written:>4}")
 print(f"  {'Outlook drafts created':<38}  {outlook_drafts:>4}")
