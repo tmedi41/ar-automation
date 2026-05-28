@@ -995,34 +995,115 @@ def log_reply():
     if not invoices or not summary:
         return jsonify({"ok": False, "error": "Invoice and summary are required."})
 
-    # If the summary has no dollar amount, look up the balance from clean_invoices and append it
+    today        = datetime.today().strftime("%Y-%m-%d")
+    invoice_list = [inv.strip() for inv in invoices.split(",") if inv.strip()]
+
+    # Build per-invoice balance map (only when the AI summary has no dollar amount)
+    inv_balance_map: dict = {}
     if "$" not in summary and DATABASE_URL:
         try:
-            inv_keys = [inv.strip() for inv in invoices.split(",") if inv.strip()]
             conn = get_db_conn()
             if conn:
                 try:
-                    placeholders = ",".join(["%s"] * len(inv_keys))
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            f"SELECT COALESCE(SUM(balance), 0) FROM clean_invoices WHERE invoice IN ({placeholders})",
-                            inv_keys,
-                        )
-                        row = cur.fetchone()
-                        if row and row[0]:
-                            balance = float(row[0])
-                            if balance > 0:
-                                summary = f"{summary} \u2014 ${balance:,.0f}"
+                    for inv in invoice_list:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT COALESCE(balance, 0) FROM clean_invoices WHERE invoice = %s",
+                                (inv,),
+                            )
+                            row = cur.fetchone()
+                            if row and row[0]:
+                                inv_balance_map[inv] = float(row[0])
                 finally:
                     conn.close()
         except Exception as _bal_err:
             print(f"[WARN] log_reply: balance lookup failed: {_bal_err}")
 
-    today = datetime.today().strftime("%Y-%m-%d")
-    invoice_list = [inv.strip() for inv in invoices.split(",") if inv.strip()]
     for inv in invoice_list:
-        _append_interaction(today, customer, inv, "Customer Reply", summary)
+        inv_summary = summary
+        bal = inv_balance_map.get(inv, 0.0)
+        if bal > 0:
+            inv_summary = f"{summary} \u2014 ${bal:,.2f}"
+        _append_interaction(today, customer, inv, "Customer Reply", inv_summary)
     return jsonify({"ok": True, "logged": len(invoice_list)})
+
+
+@app.route("/admin/fix-reply-balances", methods=["POST"])
+@_login_required
+def fix_reply_balances():
+    """One-time fix: for customer_interactions rows that share the same customer/date/notes
+    (meaning they were logged together and received the same combined balance), update each
+    row's notes so it shows only that invoice's individual balance from clean_invoices."""
+    if not DATABASE_URL:
+        return jsonify({"ok": False, "error": "No database configured."})
+
+    fixed = 0
+    errors = []
+    try:
+        conn = get_db_conn()
+        if not conn:
+            return jsonify({"ok": False, "error": "Could not connect to database."})
+        try:
+            with conn.cursor() as cur:
+                # Find all Customer Reply rows
+                cur.execute(
+                    "SELECT id, customer, invoice, date, notes "
+                    "FROM customer_interactions WHERE type = 'Customer Reply' ORDER BY id"
+                )
+                rows = cur.fetchall()
+
+            # Group by (customer, date, base_note) where base_note strips trailing " \u2014 $XXX"
+            from collections import defaultdict
+            groups: dict = defaultdict(list)
+            for row_id, customer, invoice, date, notes in rows:
+                base = re.sub(r"\s*\u2014\s*\$[\d,]+(?:\.\d+)?\s*$", "", notes or "").strip()
+                groups[(customer, date, base)].append((row_id, invoice, notes))
+
+            conn2 = get_db_conn()
+            if not conn2:
+                return jsonify({"ok": False, "error": "Could not reconnect to database."})
+            try:
+                for (customer, date, base), entries in groups.items():
+                    if len(entries) < 2:
+                        continue
+                    invoices_in_group = [e[1] for e in entries]
+                    # Look up each invoice's individual balance
+                    bal_map: dict = {}
+                    for inv in invoices_in_group:
+                        try:
+                            with conn2.cursor() as cur2:
+                                cur2.execute(
+                                    "SELECT COALESCE(balance, 0) FROM clean_invoices WHERE invoice = %s",
+                                    (inv,),
+                                )
+                                brow = cur2.fetchone()
+                                if brow and brow[0]:
+                                    bal_map[inv] = float(brow[0])
+                        except Exception as _e:
+                            errors.append(f"balance lookup {inv}: {_e}")
+
+                    # Update each row with its individual balance
+                    for row_id, inv, _old_notes in entries:
+                        bal = bal_map.get(inv, 0.0)
+                        new_notes = f"{base} \u2014 ${bal:,.2f}" if bal > 0 else base
+                        try:
+                            with conn2:
+                                with conn2.cursor() as cur2:
+                                    cur2.execute(
+                                        "UPDATE customer_interactions SET notes = %s WHERE id = %s",
+                                        (new_notes, row_id),
+                                    )
+                            fixed += 1
+                        except Exception as _e:
+                            errors.append(f"update row {row_id}: {_e}")
+            finally:
+                conn2.close()
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+    return jsonify({"ok": True, "fixed": fixed, "errors": errors})
 
 
 @app.route("/delete-reply", methods=["POST"])
