@@ -106,7 +106,7 @@ df["Days_Until_Due"] = (df["Due_Date"] - today).dt.days   # positive = future
 def _categorize(row) -> str | None:
     dud = row["Days_Until_Due"]
     dpd = row["Days_Past_Due"]
-    if 0 <= dud <= 7:
+    if 0 <= dud <= 5:
         return "PRE_DUE"
     if 1 <= dpd <= 20:
         return "PAST_DUE"
@@ -247,7 +247,7 @@ def build_email(customer: str, group: pd.DataFrame,
         sections.append(_invoice_section(overdue_grp, "Days_Past_Due",  "Days Past Due"))
         sections.append("")
     if not predue_grp.empty:
-        label = "  Invoices Due Within 7 Days:" if not overdue_grp.empty else "  Upcoming Invoices (Due Within 7 Days):"
+        label = "  Invoices Due Within 5 Days:" if not overdue_grp.empty else "  Upcoming Invoices (Due Within 5 Days):"
         sections.append(label)
         sections.append(_invoice_section(predue_grp,  "Days_Until_Due", "Days Until Due"))
         sections.append("")
@@ -262,7 +262,7 @@ def build_email(customer: str, group: pd.DataFrame,
             f"Hello,\n"
             f"\n"
             f"This is a friendly reminder that the following invoice(s) on your "
-            f"account will be coming due within the next 7 days. To ensure "
+            f"account will be coming due within the next 5 days. To ensure "
             f"uninterrupted service and avoid any late fees, please plan for "
             f"timely payment.\n"
             f"\n"
@@ -381,7 +381,7 @@ def build_email_html(customer: str, group: pd.DataFrame,
         sections.append("<p><b>Past-Due Invoices:</b></p>")
         sections.append(_invoice_section_html(overdue_grp, "Days_Past_Due", "Days Past Due"))
     if not predue_grp.empty:
-        label = "Invoices Due Within 7 Days:" if not overdue_grp.empty else "Upcoming Invoices (Due Within 7 Days):"
+        label = "Invoices Due Within 5 Days:" if not overdue_grp.empty else "Upcoming Invoices (Due Within 5 Days):"
         sections.append(f"<p><b>{label}</b></p>")
         sections.append(_invoice_section_html(predue_grp, "Days_Until_Due", "Days Until Due"))
 
@@ -394,7 +394,7 @@ def build_email_html(customer: str, group: pd.DataFrame,
         html_body = (
             f"<p>Hello,</p>"
             f"<p>This is a friendly reminder that the following invoice(s) on your "
-            f"account will be coming due within the next 7 days. To ensure "
+            f"account will be coming due within the next 5 days. To ensure "
             f"uninterrupted service and avoid any late fees, please plan for "
             f"timely payment.</p>"
             f"{invoice_block_html}"
