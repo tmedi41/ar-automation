@@ -53,6 +53,7 @@
       margin-bottom: 6px;
     }
 
+    input[type="text"],
     input[type="password"] {
       width: 100%;
       padding: 9px 12px;
@@ -67,6 +68,7 @@
       margin-bottom: 20px;
     }
 
+    input[type="text"]:focus,
     input[type="password"]:focus {
       border-color: #2C2C2A;
       background: #FFFFFF;
@@ -101,8 +103,10 @@
     <div class="login-sub">Working Solutions Inc.</div>
 
     <form method="POST" action="{{ url_for('login') }}">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autofocus autocomplete="username" />
       <label for="password">Password</label>
-      <input type="password" id="password" name="password" autofocus autocomplete="current-password" />
+      <input type="password" id="password" name="password" autocomplete="current-password" />
       {% if error %}
         <div class="error-msg">{{ error }}</div>
       {% endif %}

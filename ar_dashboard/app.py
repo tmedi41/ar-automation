@@ -844,16 +844,20 @@ def get_payment_history_data() -> dict:
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
+ADMIN_USERNAME = os.environ.get("DASHBOARD_USERNAME", "TanyaM")
+ADMIN_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "Working$2026")
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
     if request.method == "POST":
+        username = request.form.get("username", "")
         password = request.form.get("password", "")
-        correct  = os.environ.get("DASHBOARD_PASSWORD", "")
-        if password and password == correct:
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
             session["authenticated"] = True
             return redirect(url_for("index"))
-        error = "Incorrect password."
+        error = "Incorrect username or password."
     return render_template("login.html", error=error)
 
 
