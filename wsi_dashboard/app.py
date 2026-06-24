@@ -1236,7 +1236,7 @@ def pay_run_calculate():
                 )
 
                 cur.execute(
-                    "SELECT vendor_name, due_date, open_balance "
+                    "SELECT vendor_name, bill_date, due_date, open_balance "
                     "FROM bills ORDER BY due_date ASC"
                 )
                 bills = cur.fetchall()
@@ -1265,8 +1265,8 @@ def pay_run_calculate():
     )
 
     priority_labels = {id(b): "Overdue" for b in overdue}
-    priority_labels.update({id(b): "Due ≤7 days" for b in due_7})
-    priority_labels.update({id(b): "Due ≤30 days" for b in due_30})
+    priority_labels.update({id(b): "Due in 7 days or less" for b in due_7})
+    priority_labels.update({id(b): "Due in 30 days or less" for b in due_30})
 
     ordered = overdue + due_7 + due_30
 
@@ -1286,12 +1286,21 @@ def pay_run_calculate():
     hold.extend(beyond_30)
 
     def _fmt_bill(b):
+        d = b["days_overdue"]
+        if d > 0:
+            status = f"{d}d overdue"
+        elif d == 0:
+            status = "Due today"
+        else:
+            status = f"Due in {abs(d)}d"
         return {
             "vendor_name": b["vendor_name"],
+            "bill_date": b.get("bill_date").strftime("%m/%d/%Y") if b.get("bill_date") else "",
             "due_date": b["due_date"].strftime("%m/%d/%Y") if b["due_date"] else "",
             "open_balance": f"${float(b['open_balance']):,.2f}",
             "open_balance_raw": float(b["open_balance"]),
             "days_overdue": b["days_overdue"],
+            "status": status,
             "priority": priority_labels.get(id(b), "Due >30 days"),
         }
 

@@ -250,12 +250,16 @@ document.getElementById("btn-export").addEventListener("click", () => {
     showToast("No recommended bills to export.", "error");
     return;
   }
-  const rows = [["Vendor", "Due Date", "Amount", "Priority"]];
+  const rows = [["Vendor", "Bill Date", "Due Date", "Amount", "Status", "Priority"]];
+  let totalAmt = 0;
   lastData.recommended.forEach(b => {
-    rows.push([b.vendor_name, b.due_date, b.open_balance_raw.toFixed(2), b.priority]);
+    totalAmt += b.open_balance_raw;
+    rows.push([b.vendor_name, b.bill_date || "", b.due_date, b.open_balance_raw.toFixed(2), b.status, b.priority]);
   });
+  rows.push(["", "", "Total", totalAmt.toFixed(2), "", ""]);
   const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv" });
+  const bom = "﻿";
+  const blob = new Blob([bom + csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
