@@ -1,9 +1,9 @@
 """
-ar_dashboard/app.py
+wsi_dashboard/app.py
 --------------------
 Flask web dashboard for the AR Automation system.
 Reads reports/, database/, and data/ from the parent AR_Automation directory.
-Run:  python3 ar_dashboard/app.py
+Run:  python3 wsi_dashboard/app.py
 """
 
 import io

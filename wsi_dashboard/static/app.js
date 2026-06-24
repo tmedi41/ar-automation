@@ -1,4 +1,4 @@
-/* ar_dashboard/static/app.js */
+/* wsi_dashboard/static/app.js */
 
 // ── Toast ─────────────────────────────────────────────────────────────────
 const toast = document.getElementById("toast");
