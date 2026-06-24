@@ -126,6 +126,42 @@ def init_db():
                         updated_at TIMESTAMP DEFAULT NOW()
                     )
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS recurring_obligations (
+                        id                   SERIAL PRIMARY KEY,
+                        vendor_name          TEXT NOT NULL,
+                        amount               NUMERIC(12, 2) NOT NULL,
+                        typical_day_of_month INT NOT NULL,
+                        category             TEXT NOT NULL DEFAULT '',
+                        is_active            BOOLEAN NOT NULL DEFAULT TRUE
+                    )
+                """)
+                cur.execute("SELECT COUNT(*) FROM recurring_obligations")
+                if cur.fetchone()[0] == 0:
+                    _seed = [
+                        ("T Bank SBA Loan",        24168.00,  1, "Debt"),
+                        ("WSI Consulting Fee",      6106.00,  1, "Payroll"),
+                        ("WSI Loan Payment",        3454.11,  1, "Debt"),
+                        ("Rent",                    6607.00,  1, "Rent"),
+                        ("IT Services",              507.00,  1, "Operations"),
+                        ("LMS CPA",                 1100.00,  1, "Professional Fees"),
+                        ("Health Insurance BCBS",    4244.00, 30, "Benefits"),
+                        ("Sun Life (dental/life)",    380.00, 16, "Benefits"),
+                        ("PLIC-SBD Insurance",         79.50, 30, "Benefits"),
+                        ("Principal-EIS",             396.25,  2, "Benefits"),
+                        ("First Insurance",          1765.00,  1, "Insurance"),
+                        ("Adrem / Angle Insurance",  3852.00, 16, "Insurance"),
+                        ("BancFirst Service Charge",  663.00, 15, "Bank Fees"),
+                        ("Merchant Services Fee",     338.00, 15, "Bank Fees"),
+                        ("Chase Credit Card",        4384.00, 15, "Credit Card"),
+                    ]
+                    for vendor, amt, day, cat in _seed:
+                        cur.execute(
+                            "INSERT INTO recurring_obligations "
+                            "(vendor_name, amount, typical_day_of_month, category) "
+                            "VALUES (%s, %s, %s, %s)",
+                            (vendor, amt, day, cat),
+                        )
 
         # Restore ar_aging.csv from Postgres so automation scripts can find it
         with conn.cursor() as cur:
@@ -882,6 +918,84 @@ def index():
         customer_replies=get_customer_replies(),
         payment_data=get_payment_history_data(),
     )
+
+
+@app.route("/cash-position")
+@_login_required
+def cash_position():
+    obligations = []
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, vendor_name, amount, typical_day_of_month, "
+                    "category, is_active FROM recurring_obligations "
+                    "WHERE is_active = TRUE ORDER BY typical_day_of_month, vendor_name"
+                )
+                obligations = cur.fetchall()
+        finally:
+            conn.close()
+
+    today = datetime.today()
+    current_day = today.day
+    total_obligations = sum(float(o["amount"]) for o in obligations)
+    already_hit = [o for o in obligations if o["typical_day_of_month"] <= current_day]
+    still_pending = [o for o in obligations if o["typical_day_of_month"] > current_day]
+    sum_hit = sum(float(o["amount"]) for o in already_hit)
+    sum_pending = sum(float(o["amount"]) for o in still_pending)
+
+    return render_template(
+        "cash_position.html",
+        obligations=obligations,
+        already_hit=already_hit,
+        still_pending=still_pending,
+        total_obligations=f"${total_obligations:,.2f}",
+        sum_hit=f"${sum_hit:,.2f}",
+        sum_pending=f"${sum_pending:,.2f}",
+        current_day=current_day,
+        current_month=today.strftime("%B %Y"),
+    )
+
+
+@app.route("/cash-position/calculate", methods=["POST"])
+@_login_required
+def cash_position_calculate():
+    data = request.get_json()
+    balance_str = (data.get("balance") or "").strip().replace("$", "").replace(",", "")
+    try:
+        balance = float(balance_str)
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "Please enter a valid dollar amount."})
+
+    obligations = []
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT amount, typical_day_of_month FROM recurring_obligations "
+                    "WHERE is_active = TRUE"
+                )
+                obligations = cur.fetchall()
+        finally:
+            conn.close()
+
+    current_day = datetime.today().day
+    total = sum(float(o["amount"]) for o in obligations)
+    hit = sum(float(o["amount"]) for o in obligations if o["typical_day_of_month"] <= current_day)
+    pending = sum(float(o["amount"]) for o in obligations if o["typical_day_of_month"] > current_day)
+    available = balance - pending
+
+    return jsonify({
+        "ok": True,
+        "entered_balance": f"${balance:,.2f}",
+        "total_obligations": f"${total:,.2f}",
+        "already_hit": f"${hit:,.2f}",
+        "still_pending": f"${pending:,.2f}",
+        "available_cash": f"${available:,.2f}",
+        "available_raw": available,
+    })
 
 
 @app.route("/run-automation", methods=["POST"])

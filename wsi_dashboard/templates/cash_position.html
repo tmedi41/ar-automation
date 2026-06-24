@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cash Position &mdash; Working Solutions</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header class="page-header">
+  <div class="header-left">
+    <div class="header-title">Cash Position</div>
+    <div class="header-sub">Working Solutions Inc. &mdash; {{ current_month }}</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="{{ url_for('index') }}" class="btn-run" style="text-decoration:none">
+      &larr; AR Dashboard
+    </a>
+    <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
+      <button type="submit" class="btn-logout">Log out</button>
+    </form>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- ── Balance Input ───────────────────────────────────────────────────── -->
+  <div class="card" style="max-width:480px;margin-bottom:24px">
+    <div class="card-header">
+      <div class="section-title">BancFirst Checking Balance</div>
+    </div>
+    <div style="display:flex;gap:12px;align-items:flex-end">
+      <div class="form-group" style="flex:1;margin-bottom:0">
+        <label class="form-label" for="balance-input">Current Balance</label>
+        <input type="text" id="balance-input" class="form-input"
+               placeholder="$0.00" inputmode="decimal" />
+      </div>
+      <button class="btn-primary" id="btn-calculate" style="height:42px;white-space:nowrap">
+        Calculate
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Summary Cards (shown after Calculate) ───────────────────────────── -->
+  <div class="metrics-grid" id="summary-cards" style="display:none">
+    <div class="metric-card">
+      <div class="metric-label">Total Obligations</div>
+      <div class="metric-value" id="mc-total">&mdash;</div>
+      <div class="metric-sub">{{ current_month }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Already Hit</div>
+      <div class="metric-value" id="mc-hit" style="color:#888780">&mdash;</div>
+      <div class="metric-sub">Day 1&ndash;{{ current_day }}</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Still Pending</div>
+      <div class="metric-value danger" id="mc-pending">&mdash;</div>
+      <div class="metric-sub">Day {{ current_day + 1 }}&ndash;31</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Available Cash</div>
+      <div class="metric-value" id="mc-available">&mdash;</div>
+      <div class="metric-sub">After all pending clear</div>
+    </div>
+  </div>
+
+  <!-- ── Already Hit ─────────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="section-title">Already Hit (Day &le; {{ current_day }})</div>
+      <span style="font-size:13px;font-weight:600;color:#888780">{{ sum_hit }}</span>
+    </div>
+    {% if already_hit %}
+    <table class="ph-payments-table">
+      <thead>
+        <tr>
+          <th>Vendor</th>
+          <th>Category</th>
+          <th>Day</th>
+          <th class="ph-amount-col">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in already_hit %}
+        <tr>
+          <td class="ph-customer">{{ o.vendor_name }}</td>
+          <td>{{ o.category }}</td>
+          <td>{{ o.typical_day_of_month }}</td>
+          <td class="ph-amount">${{ "%.2f"|format(o.amount|float) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:#888780;font-size:13px;padding:12px 16px">
+      No obligations have hit yet this month.
+    </p>
+    {% endif %}
+  </div>
+
+  <!-- ── Still Pending ───────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="section-title">Still Pending (Day &gt; {{ current_day }})</div>
+      <span style="font-size:13px;font-weight:600;color:#D85A30">{{ sum_pending }}</span>
+    </div>
+    {% if still_pending %}
+    <table class="ph-payments-table">
+      <thead>
+        <tr>
+          <th>Vendor</th>
+          <th>Category</th>
+          <th>Day</th>
+          <th class="ph-amount-col">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in still_pending %}
+        <tr>
+          <td class="ph-customer">{{ o.vendor_name }}</td>
+          <td>{{ o.category }}</td>
+          <td>{{ o.typical_day_of_month }}</td>
+          <td class="ph-amount" style="color:#D85A30">${{ "%.2f"|format(o.amount|float) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:#888780;font-size:13px;padding:12px 16px">
+      All obligations for this month have already hit.
+    </p>
+    {% endif %}
+  </div>
+
+</main>
+
+<!-- ── Toast ──────────────────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script>
+const toast = document.getElementById("toast");
+let toastTimer = null;
+function showToast(msg, type) {
+  toast.textContent = msg;
+  toast.className = "show " + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.className = ""; }, 4000);
+}
+
+document.getElementById("btn-calculate").addEventListener("click", async () => {
+  const val = document.getElementById("balance-input").value.trim();
+  if (!val) { showToast("Enter a balance first.", "error"); return; }
+
+  const btn = document.getElementById("btn-calculate");
+  btn.disabled = true;
+  btn.textContent = "Calculating…";
+
+  try {
+    const resp = await fetch("/cash-position/calculate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ balance: val }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      document.getElementById("summary-cards").style.display = "";
+      document.getElementById("mc-total").textContent   = data.total_obligations;
+      document.getElementById("mc-hit").textContent     = data.already_hit;
+      document.getElementById("mc-pending").textContent = data.still_pending;
+
+      const avEl = document.getElementById("mc-available");
+      avEl.textContent = data.available_cash;
+      avEl.className = "metric-value " + (data.available_raw >= 0 ? "payments-value" : "danger");
+
+      showToast("Cash position calculated.", "success");
+    } else {
+      showToast(data.error || "Calculation failed.", "error");
+    }
+  } catch (err) {
+    showToast("Network error — " + err, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Calculate";
+  }
+});
+
+document.getElementById("balance-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("btn-calculate").click();
+});
+</script>
+
+</body>
+</html>

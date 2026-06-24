@@ -16,6 +16,9 @@ venv/
 # Local tool settings
 .claude/
 
+# Input data – contains sensitive business info
+inputs/
+
 # Generated output (optional – remove lines if you want these tracked)
 exports/
 database/
