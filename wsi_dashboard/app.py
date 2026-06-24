@@ -1010,6 +1010,41 @@ def cash_position_calculate():
     })
 
 
+@app.route("/ap")
+@_login_required
+def ap_dashboard():
+    open_count = 0
+    total_owed = 0.0
+    pending_obligations = 0.0
+    current_day = datetime.today().day
+
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*), COALESCE(SUM(open_balance), 0) FROM bills")
+                row = cur.fetchone()
+                open_count = row[0]
+                total_owed = float(row[1])
+
+                cur.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM recurring_obligations "
+                    "WHERE is_active = TRUE AND typical_day_of_month > %s",
+                    (current_day,),
+                )
+                pending_obligations = float(cur.fetchone()[0])
+        finally:
+            conn.close()
+
+    return render_template(
+        "ap_dashboard.html",
+        open_count=open_count,
+        total_owed=f"${total_owed:,.2f}",
+        pending_obligations=f"${pending_obligations:,.2f}",
+        current_month=datetime.today().strftime("%B %Y"),
+    )
+
+
 @app.route("/bills-queue")
 @_login_required
 def bills_queue():

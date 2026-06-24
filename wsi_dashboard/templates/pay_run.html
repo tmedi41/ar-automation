@@ -18,17 +18,18 @@
     <a href="{{ url_for('index') }}" class="btn-run" style="text-decoration:none">
       &larr; AR Dashboard
     </a>
-    <a href="{{ url_for('cash_position') }}" class="btn-run" style="text-decoration:none">
-      Cash Position
-    </a>
-    <a href="{{ url_for('bills_queue') }}" class="btn-run" style="text-decoration:none">
-      Bills Queue
-    </a>
     <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
       <button type="submit" class="btn-logout">Log out</button>
     </form>
   </div>
 </header>
+
+<nav class="nav-tabs">
+  <a href="{{ url_for('ap_dashboard') }}" class="nav-tab" style="text-decoration:none">Overview</a>
+  <a href="{{ url_for('cash_position') }}" class="nav-tab" style="text-decoration:none">Cash Position</a>
+  <a href="{{ url_for('bills_queue') }}" class="nav-tab" style="text-decoration:none">Bills Queue</a>
+  <a href="{{ url_for('pay_run') }}" class="nav-tab active" style="text-decoration:none">Pay Run</a>
+</nav>
 
 <main class="main">
 

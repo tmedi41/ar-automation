@@ -16,6 +16,9 @@
     <div class="header-sub">Working Solutions Inc.{% if metrics.generated %} &mdash; {{ metrics.generated }}{% endif %}</div>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
+    <a href="{{ url_for('ap_dashboard') }}" class="btn-run" style="text-decoration:none">
+      AP &amp; Cash &rarr;
+    </a>
     <button class="btn-run" id="btn-run">&#9654; Run Automation</button>
     <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
       <button type="submit" class="btn-logout">Log out</button>
@@ -30,9 +33,6 @@
   <button class="nav-tab" data-tab="replies">Customer Replies</button>
   <button class="nav-tab" data-tab="weekly">Weekly Report</button>
   <button class="nav-tab" data-tab="payment">Payment History</button>
-  <a href="{{ url_for('cash_position') }}" class="nav-tab" style="text-decoration:none">Cash Position</a>
-  <a href="{{ url_for('bills_queue') }}" class="nav-tab" style="text-decoration:none">Bills Queue</a>
-  <a href="{{ url_for('pay_run') }}" class="nav-tab" style="text-decoration:none">Pay Run</a>
 </nav>
 
 <!-- ── Main ─────────────────────────────────────────────────────────────── -->
