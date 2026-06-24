@@ -1163,6 +1163,122 @@ def bills_queue_upload():
     return jsonify({"ok": True, "count": len(df)})
 
 
+@app.route("/pay-run")
+@_login_required
+def pay_run():
+    return render_template("pay_run.html")
+
+
+SAFETY_BUFFER = 5000
+
+
+@app.route("/pay-run/calculate", methods=["POST"])
+@_login_required
+def pay_run_calculate():
+    data = request.get_json()
+    balance_str = (data.get("balance") or "").strip().replace("$", "").replace(",", "")
+    try:
+        balance = float(balance_str)
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "Please enter a valid dollar amount."})
+
+    today = datetime.today().date()
+    current_day = today.day
+    pending_obligations = 0.0
+    bills = []
+
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT amount FROM recurring_obligations "
+                    "WHERE is_active = TRUE AND typical_day_of_month > %s",
+                    (current_day,),
+                )
+                pending_obligations = sum(
+                    float(r["amount"]) for r in cur.fetchall()
+                )
+
+                cur.execute(
+                    "SELECT vendor_name, due_date, open_balance "
+                    "FROM bills ORDER BY due_date ASC"
+                )
+                bills = cur.fetchall()
+        finally:
+            conn.close()
+
+    available_cash = balance - pending_obligations
+
+    for b in bills:
+        if b["due_date"]:
+            b["days_overdue"] = (today - b["due_date"]).days
+        else:
+            b["days_overdue"] = 0
+
+    overdue = sorted(
+        [b for b in bills if b["days_overdue"] > 0],
+        key=lambda b: b["due_date"] or today,
+    )
+    due_7 = sorted(
+        [b for b in bills if 0 >= b["days_overdue"] >= -7],
+        key=lambda b: b["due_date"] or today,
+    )
+    due_30 = sorted(
+        [b for b in bills if -7 > b["days_overdue"] >= -30],
+        key=lambda b: b["due_date"] or today,
+    )
+
+    priority_labels = {id(b): "Overdue" for b in overdue}
+    priority_labels.update({id(b): "Due ≤7 days" for b in due_7})
+    priority_labels.update({id(b): "Due ≤30 days" for b in due_30})
+
+    ordered = overdue + due_7 + due_30
+
+    recommended = []
+    hold = []
+    remaining = available_cash
+
+    for b in ordered:
+        amt = float(b["open_balance"])
+        if remaining - amt >= SAFETY_BUFFER:
+            remaining -= amt
+            recommended.append(b)
+        else:
+            hold.append(b)
+
+    beyond_30 = [b for b in bills if b not in ordered]
+    hold.extend(beyond_30)
+
+    def _fmt_bill(b):
+        return {
+            "vendor_name": b["vendor_name"],
+            "due_date": b["due_date"].strftime("%m/%d/%Y") if b["due_date"] else "",
+            "open_balance": f"${float(b['open_balance']):,.2f}",
+            "open_balance_raw": float(b["open_balance"]),
+            "days_overdue": b["days_overdue"],
+            "priority": priority_labels.get(id(b), "Due >30 days"),
+        }
+
+    total_rec = sum(float(b["open_balance"]) for b in recommended)
+    total_held = sum(float(b["open_balance"]) for b in hold)
+
+    return jsonify({
+        "ok": True,
+        "entered_balance": f"${balance:,.2f}",
+        "pending_obligations": f"${pending_obligations:,.2f}",
+        "available_cash": f"${available_cash:,.2f}",
+        "available_raw": available_cash,
+        "safety_buffer": SAFETY_BUFFER,
+        "remaining_after": f"${remaining:,.2f}",
+        "remaining_raw": remaining,
+        "recommended": [_fmt_bill(b) for b in recommended],
+        "hold": [_fmt_bill(b) for b in hold],
+        "total_recommended": f"${total_rec:,.2f}",
+        "total_held": f"${total_held:,.2f}",
+    })
+
+
 @app.route("/run-automation", methods=["POST"])
 @_login_required
 def run_automation():

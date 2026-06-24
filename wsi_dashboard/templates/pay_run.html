@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pay Run &mdash; Working Solutions</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header class="page-header">
+  <div class="header-left">
+    <div class="header-title">Pay Run Recommender</div>
+    <div class="header-sub">Working Solutions Inc.</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="{{ url_for('index') }}" class="btn-run" style="text-decoration:none">
+      &larr; AR Dashboard
+    </a>
+    <a href="{{ url_for('cash_position') }}" class="btn-run" style="text-decoration:none">
+      Cash Position
+    </a>
+    <a href="{{ url_for('bills_queue') }}" class="btn-run" style="text-decoration:none">
+      Bills Queue
+    </a>
+    <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
+      <button type="submit" class="btn-logout">Log out</button>
+    </form>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- ── Balance Input ───────────────────────────────────────────────────── -->
+  <div class="card" style="max-width:480px;margin-bottom:24px">
+    <div class="card-header">
+      <div class="section-title">BancFirst Checking Balance</div>
+    </div>
+    <div style="display:flex;gap:12px;align-items:flex-end">
+      <div class="form-group" style="flex:1;margin-bottom:0">
+        <label class="form-label" for="balance-input">Current Balance</label>
+        <input type="text" id="balance-input" class="form-input"
+               placeholder="$0.00" inputmode="decimal" />
+      </div>
+      <button class="btn-primary" id="btn-calculate" style="height:42px;white-space:nowrap">
+        Calculate Pay Run
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Summary Cards (hidden until calculate) ──────────────────────────── -->
+  <div class="metrics-grid" id="summary-cards" style="display:none">
+    <div class="metric-card">
+      <div class="metric-label">Entered Balance</div>
+      <div class="metric-value" id="mc-balance">&mdash;</div>
+      <div class="metric-sub">BancFirst checking</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Pending Obligations</div>
+      <div class="metric-value" id="mc-obligations" style="color:#D85A30">&mdash;</div>
+      <div class="metric-sub">Remaining this month</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Available Cash</div>
+      <div class="metric-value" id="mc-available">&mdash;</div>
+      <div class="metric-sub">After obligations</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Remaining After Pay Run</div>
+      <div class="metric-value" id="mc-remaining">&mdash;</div>
+      <div class="metric-sub">$5,000 safety buffer</div>
+    </div>
+  </div>
+
+  <!-- ── Recommended to Pay ──────────────────────────────────────────────── -->
+  <div class="card" id="card-recommended" style="display:none">
+    <div class="card-header">
+      <div class="section-title">Recommended to Pay</div>
+      <span style="font-size:13px;font-weight:600;color:#1D9E75" id="lbl-rec-total"></span>
+    </div>
+    <table class="ph-payments-table">
+      <thead>
+        <tr>
+          <th>Vendor</th>
+          <th>Due Date</th>
+          <th>Status</th>
+          <th>Priority</th>
+          <th class="ph-amount-col">Amount</th>
+        </tr>
+      </thead>
+      <tbody id="tbody-recommended"></tbody>
+    </table>
+    <div style="margin-top:16px">
+      <button class="btn-primary" id="btn-export">Export Pay Run CSV</button>
+    </div>
+  </div>
+
+  <!-- ── Hold for Now ────────────────────────────────────────────────────── -->
+  <div class="card" id="card-hold" style="display:none">
+    <div class="card-header">
+      <div class="section-title">Hold for Now</div>
+      <span style="font-size:13px;font-weight:600;color:#888780" id="lbl-hold-total"></span>
+    </div>
+    <table class="ph-payments-table">
+      <thead>
+        <tr>
+          <th>Vendor</th>
+          <th>Due Date</th>
+          <th>Status</th>
+          <th>Priority</th>
+          <th class="ph-amount-col">Amount</th>
+        </tr>
+      </thead>
+      <tbody id="tbody-hold"></tbody>
+    </table>
+  </div>
+
+  <!-- ── Bottom Summary ──────────────────────────────────────────────────── -->
+  <div class="card" id="card-summary" style="display:none">
+    <div class="card-header">
+      <div class="section-title">Pay Run Summary</div>
+    </div>
+    <div id="summary-body" style="font-size:14px;line-height:1.8"></div>
+  </div>
+
+</main>
+
+<!-- ── Toast ──────────────────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script>
+const toast = document.getElementById("toast");
+let toastTimer = null;
+function showToast(msg, type) {
+  toast.textContent = msg;
+  toast.className = "show " + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.className = ""; }, 4000);
+}
+
+let lastData = null;
+
+document.getElementById("btn-calculate").addEventListener("click", async () => {
+  const val = document.getElementById("balance-input").value.trim();
+  if (!val) { showToast("Enter a balance first.", "error"); return; }
+
+  const btn = document.getElementById("btn-calculate");
+  btn.disabled = true;
+  btn.textContent = "Calculating…";
+
+  try {
+    const resp = await fetch("/pay-run/calculate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ balance: val }),
+    });
+    const data = await resp.json();
+    if (!data.ok) { showToast(data.error || "Calculation failed.", "error"); return; }
+
+    lastData = data;
+
+    document.getElementById("summary-cards").style.display = "";
+    document.getElementById("mc-balance").textContent = data.entered_balance;
+
+    document.getElementById("mc-obligations").textContent = data.pending_obligations;
+
+    const avEl = document.getElementById("mc-available");
+    avEl.textContent = data.available_cash;
+    avEl.className = "metric-value " + (data.available_raw >= 5000 ? "payments-value" : "danger");
+
+    const remEl = document.getElementById("mc-remaining");
+    remEl.textContent = data.remaining_after;
+    remEl.className = "metric-value " + (data.remaining_raw >= 5000 ? "payments-value" : "danger");
+
+    renderTable("tbody-recommended", data.recommended);
+    renderTable("tbody-hold", data.hold);
+
+    document.getElementById("card-recommended").style.display = data.recommended.length ? "" : "none";
+    document.getElementById("card-hold").style.display = data.hold.length ? "" : "none";
+    document.getElementById("lbl-rec-total").textContent = data.total_recommended;
+    document.getElementById("lbl-hold-total").textContent = data.total_held;
+
+    const sumCard = document.getElementById("card-summary");
+    sumCard.style.display = "";
+    const bufferOk = data.remaining_raw >= data.safety_buffer;
+    document.getElementById("summary-body").innerHTML =
+      "<div style='display:flex;flex-wrap:wrap;gap:24px'>" +
+        "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Total Recommended</span><br>" +
+          "<span style='font-weight:700;color:#1D9E75'>" + data.total_recommended + "</span> (" + data.recommended.length + " bills)</div>" +
+        "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Total Held</span><br>" +
+          "<span style='font-weight:700'>" + data.total_held + "</span> (" + data.hold.length + " bills)</div>" +
+        "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Remaining Cash</span><br>" +
+          "<span style='font-weight:700;" + (bufferOk ? "color:#1D9E75" : "color:#D85A30") + "'>" + data.remaining_after + "</span></div>" +
+        "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Safety Buffer</span><br>" +
+          (bufferOk
+            ? "<span style='color:#1D9E75;font-weight:700'>OK &mdash; above $" + data.safety_buffer.toLocaleString() + "</span>"
+            : "<span style='color:#D85A30;font-weight:700'>WARNING &mdash; below $" + data.safety_buffer.toLocaleString() + "</span>") +
+        "</div>" +
+      "</div>";
+
+    showToast("Pay run calculated — " + data.recommended.length + " bills recommended.", "success");
+  } catch (err) {
+    showToast("Network error — " + err, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Calculate Pay Run";
+  }
+});
+
+document.getElementById("balance-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("btn-calculate").click();
+});
+
+function renderTable(tbodyId, bills) {
+  const tbody = document.getElementById(tbodyId);
+  if (!bills.length) {
+    tbody.innerHTML = "<tr><td colspan='5' style='color:#888780;padding:12px 0'>None</td></tr>";
+    return;
+  }
+  tbody.innerHTML = bills.map(b => {
+    let statusHtml;
+    if (b.days_overdue > 0) {
+      statusHtml = "<span style='color:#D85A30;font-weight:600'>" + b.days_overdue + "d overdue</span>";
+    } else if (b.days_overdue === 0) {
+      statusHtml = "<span style='color:#888780;font-weight:600'>Due today</span>";
+    } else {
+      statusHtml = "<span style='color:#888780'>Due in " + Math.abs(b.days_overdue) + "d</span>";
+    }
+    const amtColor = b.days_overdue > 0 ? "color:#D85A30" : "";
+    return "<tr>" +
+      "<td class='ph-customer'>" + esc(b.vendor_name) + "</td>" +
+      "<td class='ph-date'>" + esc(b.due_date || "—") + "</td>" +
+      "<td>" + statusHtml + "</td>" +
+      "<td>" + esc(b.priority) + "</td>" +
+      "<td class='ph-amount' style='" + amtColor + "'>" + b.open_balance + "</td>" +
+    "</tr>";
+  }).join("");
+}
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+document.getElementById("btn-export").addEventListener("click", () => {
+  if (!lastData || !lastData.recommended.length) {
+    showToast("No recommended bills to export.", "error");
+    return;
+  }
+  const rows = [["Vendor", "Due Date", "Amount", "Priority"]];
+  lastData.recommended.forEach(b => {
+    rows.push([b.vendor_name, b.due_date, b.open_balance_raw.toFixed(2), b.priority]);
+  });
+  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const d = new Date();
+  a.download = "pay_run_" + d.getFullYear() + ("0"+(d.getMonth()+1)).slice(-2) + ("0"+d.getDate()).slice(-2) + ".csv";
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast("Pay run CSV exported.", "success");
+});
+</script>
+
+</body>
+</html>
