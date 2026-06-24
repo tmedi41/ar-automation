@@ -1060,26 +1060,53 @@ def bills_queue_upload():
         return jsonify({"ok": False, "error": "File must be a .csv"})
 
     content = f.read().decode("utf-8", errors="replace")
-    df = pd.read_csv(io.StringIO(content), dtype=str)
-    df.columns = df.columns.str.strip()
 
-    col_map = {
-        "Vendor": "vendor_name",
-        "Bill Date": "bill_date",
-        "Due Date": "due_date",
-        "Bill Amount": "bill_amount",
-        "Open Balance": "open_balance",
-        "Status": "status",
-    }
+    # Detect AP aging format by scanning for header row with "Vendor display name"
+    header_row = None
+    for i, line in enumerate(content.splitlines()):
+        if "Vendor display name" in line:
+            header_row = i
+            break
+
+    is_ap_format = header_row is not None
+
+    if is_ap_format:
+        df = pd.read_csv(io.StringIO(content), dtype=str, header=header_row)
+        df.columns = df.columns.str.strip()
+        col_map = {
+            "Vendor display name": "vendor_name",
+            "Date": "bill_date",
+            "Due date": "due_date",
+            "Past due": "_past_due",
+            "Amount": "bill_amount",
+            "Open balance": "open_balance",
+        }
+    else:
+        df = pd.read_csv(io.StringIO(content), dtype=str)
+        df.columns = df.columns.str.strip()
+        col_map = {
+            "Vendor": "vendor_name",
+            "Bill Date": "bill_date",
+            "Due Date": "due_date",
+            "Bill Amount": "bill_amount",
+            "Open Balance": "open_balance",
+        }
+        if "Status" in df.columns:
+            col_map["Status"] = "status"
+
     missing = [c for c in col_map if c not in df.columns]
     if missing:
         return jsonify({"ok": False, "error": f"Missing columns: {', '.join(missing)}"})
 
     df = df.rename(columns=col_map)
-    df = df[list(col_map.values())]
+    keep = [c for c in ["vendor_name", "bill_date", "due_date", "_past_due",
+                         "bill_amount", "open_balance", "status"] if c in df.columns]
+    df = df[keep]
     df = df.dropna(subset=["vendor_name"])
     df["vendor_name"] = df["vendor_name"].str.strip()
     df = df[df["vendor_name"] != ""]
+    # Drop section headers ("CURRENT", "Total for ...") and summary rows
+    df = df[~df["vendor_name"].str.match(r"^(CURRENT|Total for |\d+ - \d+)", na=False)]
 
     def _clean_amt(v):
         if pd.isna(v) or str(v).strip() == "":
@@ -1090,7 +1117,21 @@ def bills_queue_upload():
     df["open_balance"] = df["open_balance"].apply(_clean_amt)
     df["bill_date"] = pd.to_datetime(df["bill_date"], format="mixed", errors="coerce")
     df["due_date"] = pd.to_datetime(df["due_date"], format="mixed", errors="coerce")
-    df["status"] = df["status"].fillna("").str.strip()
+
+    if is_ap_format:
+        def _derive_status(v):
+            try:
+                past_due = float(str(v).replace(",", "").strip() or "0")
+            except (ValueError, TypeError):
+                past_due = 0.0
+            return "Overdue" if past_due <= 0 else "Open"
+
+        df["status"] = df["_past_due"].apply(_derive_status)
+        df = df.drop(columns=["_past_due"])
+    else:
+        if "status" not in df.columns:
+            df["status"] = ""
+        df["status"] = df["status"].fillna("").str.strip()
 
     conn = get_db_conn()
     if not conn:
