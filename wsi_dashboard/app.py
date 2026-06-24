@@ -162,6 +162,18 @@ def init_db():
                             "VALUES (%s, %s, %s, %s)",
                             (vendor, amt, day, cat),
                         )
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS bills (
+                        id           SERIAL PRIMARY KEY,
+                        vendor_name  TEXT NOT NULL,
+                        bill_date    DATE,
+                        due_date     DATE,
+                        bill_amount  NUMERIC(12, 2) NOT NULL DEFAULT 0,
+                        open_balance NUMERIC(12, 2) NOT NULL DEFAULT 0,
+                        status       TEXT NOT NULL DEFAULT '',
+                        uploaded_at  TIMESTAMP DEFAULT NOW()
+                    )
+                """)
 
         # Restore ar_aging.csv from Postgres so automation scripts can find it
         with conn.cursor() as cur:
@@ -996,6 +1008,116 @@ def cash_position_calculate():
         "available_cash": f"${available:,.2f}",
         "available_raw": available,
     })
+
+
+@app.route("/bills-queue")
+@_login_required
+def bills_queue():
+    bills = []
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, vendor_name, bill_date, due_date, bill_amount, "
+                    "open_balance, status FROM bills ORDER BY due_date ASC"
+                )
+                bills = cur.fetchall()
+        finally:
+            conn.close()
+
+    today = datetime.today().date()
+    for b in bills:
+        if b["due_date"]:
+            delta = (today - b["due_date"]).days
+            b["days_overdue"] = delta
+        else:
+            b["days_overdue"] = None
+
+    total_count = len(bills)
+    total_owed = sum(float(b["open_balance"]) for b in bills)
+    total_overdue = sum(
+        float(b["open_balance"]) for b in bills
+        if b["days_overdue"] is not None and b["days_overdue"] > 0
+    )
+
+    return render_template(
+        "bills_queue.html",
+        bills=bills,
+        total_count=total_count,
+        total_owed=f"${total_owed:,.2f}",
+        total_overdue=f"${total_overdue:,.2f}",
+    )
+
+
+@app.route("/bills-queue/upload", methods=["POST"])
+@_login_required
+def bills_queue_upload():
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "No file provided."})
+    f = request.files["file"]
+    if not f.filename.lower().endswith(".csv"):
+        return jsonify({"ok": False, "error": "File must be a .csv"})
+
+    content = f.read().decode("utf-8", errors="replace")
+    df = pd.read_csv(io.StringIO(content), dtype=str)
+    df.columns = df.columns.str.strip()
+
+    col_map = {
+        "Vendor": "vendor_name",
+        "Bill Date": "bill_date",
+        "Due Date": "due_date",
+        "Bill Amount": "bill_amount",
+        "Open Balance": "open_balance",
+        "Status": "status",
+    }
+    missing = [c for c in col_map if c not in df.columns]
+    if missing:
+        return jsonify({"ok": False, "error": f"Missing columns: {', '.join(missing)}"})
+
+    df = df.rename(columns=col_map)
+    df = df[list(col_map.values())]
+    df = df.dropna(subset=["vendor_name"])
+    df["vendor_name"] = df["vendor_name"].str.strip()
+    df = df[df["vendor_name"] != ""]
+
+    def _clean_amt(v):
+        if pd.isna(v) or str(v).strip() == "":
+            return 0.0
+        return float(str(v).replace("$", "").replace(",", "").strip())
+
+    df["bill_amount"] = df["bill_amount"].apply(_clean_amt)
+    df["open_balance"] = df["open_balance"].apply(_clean_amt)
+    df["bill_date"] = pd.to_datetime(df["bill_date"], format="mixed", errors="coerce")
+    df["due_date"] = pd.to_datetime(df["due_date"], format="mixed", errors="coerce")
+    df["status"] = df["status"].fillna("").str.strip()
+
+    conn = get_db_conn()
+    if not conn:
+        return jsonify({"ok": False, "error": "Database not available."})
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM bills")
+                for _, row in df.iterrows():
+                    cur.execute(
+                        "INSERT INTO bills (vendor_name, bill_date, due_date, "
+                        "bill_amount, open_balance, status) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (
+                            row["vendor_name"],
+                            row["bill_date"] if pd.notna(row["bill_date"]) else None,
+                            row["due_date"] if pd.notna(row["due_date"]) else None,
+                            row["bill_amount"],
+                            row["open_balance"],
+                            row["status"],
+                        ),
+                    )
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True, "count": len(df)})
 
 
 @app.route("/run-automation", methods=["POST"])

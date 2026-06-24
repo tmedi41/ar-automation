@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bills Queue &mdash; Working Solutions</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header class="page-header">
+  <div class="header-left">
+    <div class="header-title">Bills Queue</div>
+    <div class="header-sub">Working Solutions Inc. &mdash; Unpaid Bills</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="{{ url_for('index') }}" class="btn-run" style="text-decoration:none">
+      &larr; AR Dashboard
+    </a>
+    <a href="{{ url_for('cash_position') }}" class="btn-run" style="text-decoration:none">
+      Cash Position
+    </a>
+    <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
+      <button type="submit" class="btn-logout">Log out</button>
+    </form>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- ── Upload ──────────────────────────────────────────────────────────── -->
+  <div class="card" style="max-width:560px;margin-bottom:24px">
+    <div class="card-header">
+      <div class="section-title">Upload QBO Unpaid Bills</div>
+    </div>
+    <p class="upload-desc">Upload your QuickBooks Unpaid Bills CSV. This replaces all existing bill data.</p>
+
+    <div class="upload-zone" id="upload-zone">
+      <div class="upload-icon">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#B4B2A9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="16 16 12 12 8 16"></polyline>
+          <line x1="12" y1="12" x2="12" y2="21"></line>
+          <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path>
+        </svg>
+      </div>
+      <div class="upload-label">Drop your CSV here, or <span class="upload-browse">browse</span></div>
+      <div class="upload-hint">Accepts .csv files only</div>
+      <input type="file" id="file-input" accept=".csv" style="display:none" />
+    </div>
+
+    <div id="upload-file-preview" class="upload-file-preview" style="display:none">
+      <span class="upload-file-icon">&#128196;</span>
+      <span id="upload-file-name" class="upload-file-name"></span>
+      <button class="upload-clear-btn" id="upload-clear">&#10005;</button>
+    </div>
+
+    <div class="upload-actions" id="upload-actions" style="display:none">
+      <button class="btn-primary" id="btn-upload">Upload File</button>
+    </div>
+
+    <div id="upload-status"></div>
+  </div>
+
+  <!-- ── Summary Cards ───────────────────────────────────────────────────── -->
+  {% if bills %}
+  <div class="metrics-grid" style="grid-template-columns:repeat(3,1fr)">
+    <div class="metric-card">
+      <div class="metric-label">Open Bills</div>
+      <div class="metric-value">{{ total_count }}</div>
+      <div class="metric-sub">Total invoices</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Total Owed</div>
+      <div class="metric-value">{{ total_owed }}</div>
+      <div class="metric-sub">Open balance</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Overdue Amount</div>
+      <div class="metric-value danger">{{ total_overdue }}</div>
+      <div class="metric-sub">Past due date</div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ── Bills Table ─────────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="section-title">All Open Bills</div>
+      <span style="font-size:13px;font-weight:600;color:#888780">{{ bills|length }} bills</span>
+    </div>
+    {% if bills %}
+    <table class="ph-payments-table">
+      <thead>
+        <tr>
+          <th>Vendor</th>
+          <th>Bill Date</th>
+          <th>Due Date</th>
+          <th>Days Overdue</th>
+          <th class="ph-amount-col">Bill Amount</th>
+          <th class="ph-amount-col">Open Balance</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in bills %}
+        <tr>
+          <td class="ph-customer">{{ b.vendor_name }}</td>
+          <td class="ph-date">{{ b.bill_date.strftime('%m/%d/%Y') if b.bill_date else '—' }}</td>
+          <td class="ph-date">{{ b.due_date.strftime('%m/%d/%Y') if b.due_date else '—' }}</td>
+          <td>
+            {% if b.days_overdue is not none %}
+              {% if b.days_overdue > 0 %}
+                <span style="color:#D85A30;font-weight:600">{{ b.days_overdue }}d overdue</span>
+              {% elif b.days_overdue == 0 %}
+                <span style="color:#888780;font-weight:600">Due today</span>
+              {% else %}
+                <span style="color:#888780">Due in {{ b.days_overdue|abs }}d</span>
+              {% endif %}
+            {% else %}
+              &mdash;
+            {% endif %}
+          </td>
+          <td class="ph-amount">${{ "%.2f"|format(b.bill_amount|float) }}</td>
+          <td class="ph-amount" style="{% if b.days_overdue is not none and b.days_overdue > 0 %}color:#D85A30{% endif %}">${{ "%.2f"|format(b.open_balance|float) }}</td>
+          <td>{{ b.status }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:#888780;font-size:13px;padding:12px 16px">
+      No bills uploaded yet. Use the upload form above to import your QBO Unpaid Bills export.
+    </p>
+    {% endif %}
+  </div>
+
+</main>
+
+<!-- ── Toast ──────────────────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script>
+const toast = document.getElementById("toast");
+let toastTimer = null;
+function showToast(msg, type) {
+  toast.textContent = msg;
+  toast.className = "show " + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.className = ""; }, 4000);
+}
+
+const zone = document.getElementById("upload-zone");
+const fileInput = document.getElementById("file-input");
+const preview = document.getElementById("upload-file-preview");
+const fileName = document.getElementById("upload-file-name");
+const clearBtn = document.getElementById("upload-clear");
+const actions = document.getElementById("upload-actions");
+const btnUpload = document.getElementById("btn-upload");
+
+let selectedFile = null;
+
+zone.addEventListener("click", () => fileInput.click());
+zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.style.borderColor = "#2C2C2A"; });
+zone.addEventListener("dragleave", () => { zone.style.borderColor = ""; });
+zone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  zone.style.borderColor = "";
+  if (e.dataTransfer.files.length) pickFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", () => { if (fileInput.files.length) pickFile(fileInput.files[0]); });
+
+function pickFile(f) {
+  if (!f.name.toLowerCase().endsWith(".csv")) { showToast("Please select a .csv file.", "error"); return; }
+  selectedFile = f;
+  fileName.textContent = f.name;
+  zone.style.display = "none";
+  preview.style.display = "";
+  actions.style.display = "";
+}
+
+clearBtn.addEventListener("click", () => {
+  selectedFile = null;
+  fileInput.value = "";
+  zone.style.display = "";
+  preview.style.display = "none";
+  actions.style.display = "none";
+});
+
+btnUpload.addEventListener("click", async () => {
+  if (!selectedFile) return;
+  btnUpload.disabled = true;
+  btnUpload.textContent = "Uploading…";
+
+  const fd = new FormData();
+  fd.append("file", selectedFile);
+
+  try {
+    const resp = await fetch("/bills-queue/upload", { method: "POST", body: fd });
+    const data = await resp.json();
+    if (data.ok) {
+      showToast(data.count + " bills imported.", "success");
+      setTimeout(() => location.reload(), 800);
+    } else {
+      showToast(data.error || "Upload failed.", "error");
+    }
+  } catch (err) {
+    showToast("Network error — " + err, "error");
+  } finally {
+    btnUpload.disabled = false;
+    btnUpload.textContent = "Upload File";
+  }
+});
+</script>
+
+</body>
+</html>

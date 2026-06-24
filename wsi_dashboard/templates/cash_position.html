@@ -18,6 +18,9 @@
     <a href="{{ url_for('index') }}" class="btn-run" style="text-decoration:none">
       &larr; AR Dashboard
     </a>
+    <a href="{{ url_for('bills_queue') }}" class="btn-run" style="text-decoration:none">
+      Bills Queue
+    </a>
     <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
       <button type="submit" class="btn-logout">Log out</button>
     </form>
