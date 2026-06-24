@@ -795,6 +795,7 @@ def get_payment_history_data() -> dict:
         paid = (
             log[(log["Status"].str.strip() == "Paid") & log["_paid_dt"].notna()]
             .sort_values("_paid_dt", ascending=False)
+            .drop_duplicates(subset="Invoice", keep="first")
             .head(20)
         )
         payments = []
