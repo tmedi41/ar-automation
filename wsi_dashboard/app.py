@@ -1031,8 +1031,10 @@ def bills_queue():
         if b["due_date"]:
             delta = (today - b["due_date"]).days
             b["days_overdue"] = delta
+            b["status"] = "Overdue" if delta > 0 else "Current"
         else:
             b["days_overdue"] = None
+            b["status"] = ""
 
     total_count = len(bills)
     total_owed = sum(float(b["open_balance"]) for b in bills)

@@ -96,10 +96,9 @@
           <th>Vendor</th>
           <th>Bill Date</th>
           <th>Due Date</th>
-          <th>Days Overdue</th>
+          <th>Status</th>
           <th class="ph-amount-col">Bill Amount</th>
           <th class="ph-amount-col">Open Balance</th>
-          <th>Status</th>
         </tr>
       </thead>
       <tbody>
@@ -123,7 +122,6 @@
           </td>
           <td class="ph-amount">${{ "%.2f"|format(b.bill_amount|float) }}</td>
           <td class="ph-amount" style="{% if b.days_overdue is not none and b.days_overdue > 0 %}color:#D85A30{% endif %}">${{ "%.2f"|format(b.open_balance|float) }}</td>
-          <td>{{ b.status }}</td>
         </tr>
         {% endfor %}
       </tbody>
