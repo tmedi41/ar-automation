@@ -1259,22 +1259,17 @@ def pay_run_calculate():
         [b for b in bills if 0 >= b["days_overdue"] >= -7],
         key=lambda b: b["due_date"] or today,
     )
-    due_30 = sorted(
-        [b for b in bills if -7 > b["days_overdue"] >= -30],
-        key=lambda b: b["due_date"] or today,
-    )
 
     priority_labels = {id(b): "Overdue" for b in overdue}
     priority_labels.update({id(b): "Due in 7 days or less" for b in due_7})
-    priority_labels.update({id(b): "Due in 30 days or less" for b in due_30})
 
-    ordered = overdue + due_7 + due_30
+    pay_this_week = overdue + due_7
 
     recommended = []
     hold = []
     remaining = available_cash
 
-    for b in ordered:
+    for b in pay_this_week:
         amt = float(b["open_balance"])
         if remaining - amt >= SAFETY_BUFFER:
             remaining -= amt
@@ -1282,8 +1277,8 @@ def pay_run_calculate():
         else:
             hold.append(b)
 
-    beyond_30 = [b for b in bills if b not in ordered]
-    hold.extend(beyond_30)
+    future = [b for b in bills if b not in pay_this_week]
+    hold.extend(future)
 
     def _fmt_bill(b):
         d = b["days_overdue"]
@@ -1301,7 +1296,7 @@ def pay_run_calculate():
             "open_balance_raw": float(b["open_balance"]),
             "days_overdue": b["days_overdue"],
             "status": status,
-            "priority": priority_labels.get(id(b), "Due >30 days"),
+            "priority": priority_labels.get(id(b), "Not due this week"),
         }
 
     total_rec = sum(float(b["open_balance"]) for b in recommended)
