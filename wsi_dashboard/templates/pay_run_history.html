@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pay Run History &mdash; Working Solutions</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header class="page-header">
+  <div class="header-left">
+    <div class="header-title">Pay Run History</div>
+    <div class="header-sub">Working Solutions Inc.</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="{{ url_for('index') }}" class="btn-run" style="text-decoration:none">
+      &larr; AR Dashboard
+    </a>
+    <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
+      <button type="submit" class="btn-logout">Log out</button>
+    </form>
+  </div>
+</header>
+
+<nav class="nav-tabs">
+  <a href="{{ url_for('ap_dashboard') }}" class="nav-tab" style="text-decoration:none">Overview</a>
+  <a href="{{ url_for('cash_position') }}" class="nav-tab" style="text-decoration:none">Cash Position</a>
+  <a href="{{ url_for('bills_queue') }}" class="nav-tab" style="text-decoration:none">Bills Queue</a>
+  <a href="{{ url_for('pay_run') }}" class="nav-tab" style="text-decoration:none">Pay Run</a>
+  <a href="{{ url_for('pay_run_history') }}" class="nav-tab active" style="text-decoration:none">Pay Run History</a>
+</nav>
+
+<main class="main">
+
+  <div class="card">
+    <div class="card-header">
+      <div class="section-title">Past Pay Runs</div>
+      <span style="font-size:13px;color:#888780">{{ runs|length }} total</span>
+    </div>
+    {% if runs %}
+    <table class="ph-payments-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Balance Entered</th>
+          <th class="ph-amount-col">Total Recommended</th>
+          <th class="ph-amount-col">Total Held</th>
+          <th>Calculated At</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in runs %}
+        <tr style="cursor:pointer" onclick="loadDetail({{ run.id }}, this)">
+          <td class="ph-date">{{ run.run_date_fmt }}</td>
+          <td>{{ run.balance_entered }}</td>
+          <td class="ph-amount" style="color:#1D9E75;font-weight:600">{{ run.total_recommended }}</td>
+          <td class="ph-amount">{{ run.total_held }}</td>
+          <td class="ph-date">{{ run.created_at_fmt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:#888780;padding:16px 0">No pay runs yet. Go to <a href="{{ url_for('pay_run') }}">Pay Run</a> to calculate your first one.</p>
+    {% endif %}
+  </div>
+
+  <!-- Detail panel (shown when a row is clicked) -->
+  <div class="card" id="detail-panel" style="display:none;margin-top:24px">
+    <div class="card-header">
+      <div class="section-title" id="detail-title">Pay Run Detail</div>
+    </div>
+    <div id="detail-body"></div>
+  </div>
+
+</main>
+
+<div id="toast"></div>
+
+<script>
+let activeRow = null;
+
+async function loadDetail(runId, rowEl) {
+  if (activeRow) activeRow.style.background = "";
+  activeRow = rowEl;
+  rowEl.style.background = "#E8E6DF";
+
+  const panel = document.getElementById("detail-panel");
+  const body = document.getElementById("detail-body");
+  body.innerHTML = "<p style='color:#888780'>Loading...</p>";
+  panel.style.display = "";
+
+  try {
+    const resp = await fetch("/pay-run/history/" + runId);
+    const data = await resp.json();
+    if (!data.ok) { body.innerHTML = "<p style='color:#D85A30'>Error loading detail.</p>"; return; }
+
+    document.getElementById("detail-title").textContent =
+      "Pay Run — " + data.run_date + " at " + data.created_at;
+
+    let html = "<div style='display:flex;flex-wrap:wrap;gap:24px;margin-bottom:16px'>" +
+      "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Balance</span><br><b>" + data.balance_entered + "</b></div>" +
+      "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Recommended</span><br><b style='color:#1D9E75'>" + data.total_recommended + "</b></div>" +
+      "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Held</span><br><b>" + data.total_held + "</b></div>" +
+      "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Remaining</span><br><b>" + data.remaining_after + "</b></div>" +
+    "</div>";
+
+    if (data.recommended.length) {
+      html += "<h4 style='margin:16px 0 8px;color:#1D9E75'>Recommended to Pay (" + data.recommended.length + ")</h4>";
+      html += buildItemTable(data.recommended);
+    }
+    if (data.hold.length) {
+      html += "<h4 style='margin:16px 0 8px;color:#888780'>Hold (" + data.hold.length + ")</h4>";
+      html += buildItemTable(data.hold);
+    }
+
+    body.innerHTML = html;
+  } catch (e) {
+    body.innerHTML = "<p style='color:#D85A30'>Network error.</p>";
+  }
+}
+
+function buildItemTable(items) {
+  let t = "<table class='ph-payments-table'><thead><tr>" +
+    "<th>Vendor</th><th>Due Date</th><th>Priority</th><th class='ph-amount-col'>Amount</th>" +
+    "</tr></thead><tbody>";
+  items.forEach(function(i) {
+    t += "<tr><td class='ph-customer'>" + esc(i.vendor_name) + "</td>" +
+      "<td class='ph-date'>" + esc(i.due_date || "—") + "</td>" +
+      "<td>" + esc(i.priority) + "</td>" +
+      "<td class='ph-amount'>" + i.amount + "</td></tr>";
+  });
+  t += "</tbody></table>";
+  return t;
+}
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+
+</body>
+</html>

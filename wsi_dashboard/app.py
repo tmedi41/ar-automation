@@ -174,6 +174,32 @@ def init_db():
                         uploaded_at  TIMESTAMP DEFAULT NOW()
                     )
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS pay_runs (
+                        id                  SERIAL PRIMARY KEY,
+                        run_date            DATE NOT NULL,
+                        balance_entered     NUMERIC(14, 2) NOT NULL,
+                        pending_obligations NUMERIC(14, 2) NOT NULL DEFAULT 0,
+                        available_cash      NUMERIC(14, 2) NOT NULL DEFAULT 0,
+                        remaining_after     NUMERIC(14, 2) NOT NULL DEFAULT 0,
+                        total_recommended   NUMERIC(14, 2) NOT NULL DEFAULT 0,
+                        total_held          NUMERIC(14, 2) NOT NULL DEFAULT 0,
+                        created_at          TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS pay_run_items (
+                        id             SERIAL PRIMARY KEY,
+                        pay_run_id     INT NOT NULL REFERENCES pay_runs(id) ON DELETE CASCADE,
+                        vendor_name    TEXT NOT NULL,
+                        bill_date      DATE,
+                        due_date       DATE,
+                        amount         NUMERIC(12, 2) NOT NULL DEFAULT 0,
+                        status         TEXT NOT NULL DEFAULT '',
+                        priority       TEXT NOT NULL DEFAULT '',
+                        recommendation TEXT NOT NULL DEFAULT 'hold'
+                    )
+                """)
 
         # Restore ar_aging.csv from Postgres so automation scripts can find it
         with conn.cursor() as cur:
@@ -1207,6 +1233,155 @@ def pay_run():
 SAFETY_BUFFER = 5000
 
 
+@app.route("/pay-run/latest")
+@_login_required
+def pay_run_latest():
+    conn = get_db_conn()
+    if not conn:
+        return jsonify({"ok": False})
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, run_date, balance_entered, pending_obligations, "
+                "available_cash, remaining_after, total_recommended, "
+                "total_held, created_at "
+                "FROM pay_runs ORDER BY created_at DESC LIMIT 1"
+            )
+            run = cur.fetchone()
+            if not run:
+                return jsonify({"ok": False})
+            cur.execute(
+                "SELECT vendor_name, bill_date, due_date, amount, "
+                "status, priority, recommendation "
+                "FROM pay_run_items WHERE pay_run_id = %s "
+                "ORDER BY due_date ASC",
+                (run["id"],),
+            )
+            items = cur.fetchall()
+    finally:
+        conn.close()
+
+    today = datetime.today().date()
+    recommended = []
+    hold = []
+    for item in items:
+        days_overdue = (today - item["due_date"]).days if item["due_date"] else 0
+        if days_overdue > 0:
+            status_label = f"{days_overdue}d overdue"
+        elif days_overdue == 0:
+            status_label = "Due today"
+        else:
+            status_label = f"Due in {abs(days_overdue)}d"
+        entry = {
+            "vendor_name": item["vendor_name"],
+            "bill_date": item["bill_date"].strftime("%m/%d/%Y") if item["bill_date"] else "",
+            "due_date": item["due_date"].strftime("%m/%d/%Y") if item["due_date"] else "",
+            "open_balance": f"${float(item['amount']):,.2f}",
+            "open_balance_raw": float(item["amount"]),
+            "days_overdue": days_overdue,
+            "status": status_label,
+            "priority": item["priority"],
+        }
+        if item["recommendation"] == "pay":
+            recommended.append(entry)
+        else:
+            hold.append(entry)
+
+    available_cash = float(run["available_cash"])
+    remaining = float(run["remaining_after"])
+    return jsonify({
+        "ok": True,
+        "pay_run_id": run["id"],
+        "created_at": run["created_at"].strftime("%m/%d/%Y %I:%M %p") if run["created_at"] else None,
+        "entered_balance": f"${float(run['balance_entered']):,.2f}",
+        "pending_obligations": f"${float(run['pending_obligations']):,.2f}",
+        "available_cash": f"${available_cash:,.2f}",
+        "available_raw": available_cash,
+        "safety_buffer": SAFETY_BUFFER,
+        "remaining_after": f"${remaining:,.2f}",
+        "remaining_raw": remaining,
+        "recommended": recommended,
+        "hold": hold,
+        "total_recommended": f"${sum(e['open_balance_raw'] for e in recommended):,.2f}",
+        "total_held": f"${sum(e['open_balance_raw'] for e in hold):,.2f}",
+    })
+
+
+@app.route("/pay-run/history")
+@_login_required
+def pay_run_history():
+    runs = []
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, run_date, balance_entered, "
+                    "total_recommended, total_held, created_at "
+                    "FROM pay_runs ORDER BY created_at DESC"
+                )
+                runs = cur.fetchall()
+        finally:
+            conn.close()
+    for r in runs:
+        r["balance_entered"] = f"${float(r['balance_entered']):,.2f}"
+        r["total_recommended"] = f"${float(r['total_recommended']):,.2f}"
+        r["total_held"] = f"${float(r['total_held']):,.2f}"
+        r["created_at_fmt"] = r["created_at"].strftime("%m/%d/%Y %I:%M %p") if r["created_at"] else ""
+        r["run_date_fmt"] = r["run_date"].strftime("%m/%d/%Y") if r["run_date"] else ""
+    return render_template("pay_run_history.html", runs=runs)
+
+
+@app.route("/pay-run/history/<int:run_id>")
+@_login_required
+def pay_run_detail(run_id):
+    conn = get_db_conn()
+    if not conn:
+        return jsonify({"ok": False, "error": "Database unavailable"})
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM pay_runs WHERE id = %s", (run_id,))
+            run = cur.fetchone()
+            if not run:
+                return jsonify({"ok": False, "error": "Pay run not found"})
+            cur.execute(
+                "SELECT vendor_name, bill_date, due_date, amount, "
+                "status, priority, recommendation "
+                "FROM pay_run_items WHERE pay_run_id = %s ORDER BY due_date ASC",
+                (run_id,),
+            )
+            items = cur.fetchall()
+    finally:
+        conn.close()
+
+    recommended = []
+    hold = []
+    for item in items:
+        entry = {
+            "vendor_name": item["vendor_name"],
+            "bill_date": item["bill_date"].strftime("%m/%d/%Y") if item["bill_date"] else "",
+            "due_date": item["due_date"].strftime("%m/%d/%Y") if item["due_date"] else "",
+            "amount": f"${float(item['amount']):,.2f}",
+            "priority": item["priority"],
+        }
+        if item["recommendation"] == "pay":
+            recommended.append(entry)
+        else:
+            hold.append(entry)
+
+    return jsonify({
+        "ok": True,
+        "run_date": run["run_date"].strftime("%m/%d/%Y") if run["run_date"] else "",
+        "balance_entered": f"${float(run['balance_entered']):,.2f}",
+        "total_recommended": f"${float(run['total_recommended']):,.2f}",
+        "total_held": f"${float(run['total_held']):,.2f}",
+        "remaining_after": f"${float(run['remaining_after']):,.2f}",
+        "created_at": run["created_at"].strftime("%m/%d/%Y %I:%M %p") if run["created_at"] else "",
+        "recommended": recommended,
+        "hold": hold,
+    })
+
+
 @app.route("/pay-run/calculate", methods=["POST"])
 @_login_required
 def pay_run_calculate():
@@ -1302,8 +1477,56 @@ def pay_run_calculate():
     total_rec = sum(float(b["open_balance"]) for b in recommended)
     total_held = sum(float(b["open_balance"]) for b in hold)
 
+    pay_run_id = None
+    created_at = None
+    save_conn = get_db_conn()
+    if save_conn:
+        try:
+            with save_conn:
+                with save_conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO pay_runs "
+                        "(run_date, balance_entered, pending_obligations, "
+                        "available_cash, remaining_after, total_recommended, total_held) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                        "RETURNING id, created_at",
+                        (today, balance, pending_obligations,
+                         available_cash, remaining, total_rec, total_held),
+                    )
+                    pay_run_id, created_at = cur.fetchone()
+                    for b in recommended:
+                        cur.execute(
+                            "INSERT INTO pay_run_items "
+                            "(pay_run_id, vendor_name, bill_date, due_date, "
+                            "amount, status, priority, recommendation) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'pay')",
+                            (pay_run_id, b["vendor_name"],
+                             b.get("bill_date"), b.get("due_date"),
+                             float(b["open_balance"]),
+                             priority_labels.get(id(b), "Not due this week"),
+                             priority_labels.get(id(b), "Not due this week")),
+                        )
+                    for b in hold:
+                        cur.execute(
+                            "INSERT INTO pay_run_items "
+                            "(pay_run_id, vendor_name, bill_date, due_date, "
+                            "amount, status, priority, recommendation) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'hold')",
+                            (pay_run_id, b["vendor_name"],
+                             b.get("bill_date"), b.get("due_date"),
+                             float(b["open_balance"]),
+                             priority_labels.get(id(b), "Not due this week"),
+                             priority_labels.get(id(b), "Not due this week")),
+                        )
+        except Exception as e:
+            print(f"[WARN] Failed to save pay run: {e}")
+        finally:
+            save_conn.close()
+
     return jsonify({
         "ok": True,
+        "pay_run_id": pay_run_id,
+        "created_at": created_at.strftime("%m/%d/%Y %I:%M %p") if created_at else None,
         "entered_balance": f"${balance:,.2f}",
         "pending_obligations": f"${pending_obligations:,.2f}",
         "available_cash": f"${available_cash:,.2f}",

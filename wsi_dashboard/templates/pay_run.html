@@ -29,6 +29,7 @@
   <a href="{{ url_for('cash_position') }}" class="nav-tab" style="text-decoration:none">Cash Position</a>
   <a href="{{ url_for('bills_queue') }}" class="nav-tab" style="text-decoration:none">Bills Queue</a>
   <a href="{{ url_for('pay_run') }}" class="nav-tab active" style="text-decoration:none">Pay Run</a>
+  <a href="{{ url_for('pay_run_history') }}" class="nav-tab" style="text-decoration:none">Pay Run History</a>
 </nav>
 
 <main class="main">
@@ -47,6 +48,9 @@
       <button class="btn-primary" id="btn-calculate" style="height:42px;white-space:nowrap">
         Calculate Pay Run
       </button>
+    </div>
+    <div id="last-calculated" style="margin-top:8px;font-size:12px;color:#888780;display:none">
+      Last calculated: <span id="last-calc-time"></span>
     </div>
   </div>
 
@@ -142,6 +146,53 @@ function showToast(msg, type) {
 
 let lastData = null;
 
+function renderPayRun(data) {
+  lastData = data;
+
+  document.getElementById("summary-cards").style.display = "";
+  document.getElementById("mc-balance").textContent = data.entered_balance;
+  document.getElementById("mc-obligations").textContent = data.pending_obligations;
+
+  const avEl = document.getElementById("mc-available");
+  avEl.textContent = data.available_cash;
+  avEl.className = "metric-value " + (data.available_raw >= 5000 ? "payments-value" : "danger");
+
+  const remEl = document.getElementById("mc-remaining");
+  remEl.textContent = data.remaining_after;
+  remEl.className = "metric-value " + (data.remaining_raw >= 5000 ? "payments-value" : "danger");
+
+  renderTable("tbody-recommended", data.recommended);
+  renderTable("tbody-hold", data.hold);
+
+  document.getElementById("card-recommended").style.display = data.recommended.length ? "" : "none";
+  document.getElementById("card-hold").style.display = data.hold.length ? "" : "none";
+  document.getElementById("lbl-rec-total").textContent = data.total_recommended;
+  document.getElementById("lbl-hold-total").textContent = data.total_held;
+
+  const sumCard = document.getElementById("card-summary");
+  sumCard.style.display = "";
+  const bufferOk = data.remaining_raw >= data.safety_buffer;
+  document.getElementById("summary-body").innerHTML =
+    "<div style='display:flex;flex-wrap:wrap;gap:24px'>" +
+      "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Total Recommended</span><br>" +
+        "<span style='font-weight:700;color:#1D9E75'>" + data.total_recommended + "</span> (" + data.recommended.length + " bills)</div>" +
+      "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Total Held</span><br>" +
+        "<span style='font-weight:700'>" + data.total_held + "</span> (" + data.hold.length + " bills)</div>" +
+      "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Remaining Cash</span><br>" +
+        "<span style='font-weight:700;" + (bufferOk ? "color:#1D9E75" : "color:#D85A30") + "'>" + data.remaining_after + "</span></div>" +
+      "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Safety Buffer</span><br>" +
+        (bufferOk
+          ? "<span style='color:#1D9E75;font-weight:700'>OK &mdash; above $" + data.safety_buffer.toLocaleString() + "</span>"
+          : "<span style='color:#D85A30;font-weight:700'>WARNING &mdash; below $" + data.safety_buffer.toLocaleString() + "</span>") +
+      "</div>" +
+    "</div>";
+
+  if (data.created_at) {
+    document.getElementById("last-calc-time").textContent = data.created_at;
+    document.getElementById("last-calculated").style.display = "";
+  }
+}
+
 document.getElementById("btn-calculate").addEventListener("click", async () => {
   const val = document.getElementById("balance-input").value.trim();
   if (!val) { showToast("Enter a balance first.", "error"); return; }
@@ -159,47 +210,7 @@ document.getElementById("btn-calculate").addEventListener("click", async () => {
     const data = await resp.json();
     if (!data.ok) { showToast(data.error || "Calculation failed.", "error"); return; }
 
-    lastData = data;
-
-    document.getElementById("summary-cards").style.display = "";
-    document.getElementById("mc-balance").textContent = data.entered_balance;
-
-    document.getElementById("mc-obligations").textContent = data.pending_obligations;
-
-    const avEl = document.getElementById("mc-available");
-    avEl.textContent = data.available_cash;
-    avEl.className = "metric-value " + (data.available_raw >= 5000 ? "payments-value" : "danger");
-
-    const remEl = document.getElementById("mc-remaining");
-    remEl.textContent = data.remaining_after;
-    remEl.className = "metric-value " + (data.remaining_raw >= 5000 ? "payments-value" : "danger");
-
-    renderTable("tbody-recommended", data.recommended);
-    renderTable("tbody-hold", data.hold);
-
-    document.getElementById("card-recommended").style.display = data.recommended.length ? "" : "none";
-    document.getElementById("card-hold").style.display = data.hold.length ? "" : "none";
-    document.getElementById("lbl-rec-total").textContent = data.total_recommended;
-    document.getElementById("lbl-hold-total").textContent = data.total_held;
-
-    const sumCard = document.getElementById("card-summary");
-    sumCard.style.display = "";
-    const bufferOk = data.remaining_raw >= data.safety_buffer;
-    document.getElementById("summary-body").innerHTML =
-      "<div style='display:flex;flex-wrap:wrap;gap:24px'>" +
-        "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Total Recommended</span><br>" +
-          "<span style='font-weight:700;color:#1D9E75'>" + data.total_recommended + "</span> (" + data.recommended.length + " bills)</div>" +
-        "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Total Held</span><br>" +
-          "<span style='font-weight:700'>" + data.total_held + "</span> (" + data.hold.length + " bills)</div>" +
-        "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Remaining Cash</span><br>" +
-          "<span style='font-weight:700;" + (bufferOk ? "color:#1D9E75" : "color:#D85A30") + "'>" + data.remaining_after + "</span></div>" +
-        "<div><span style='color:#888780;font-size:11px;text-transform:uppercase;font-weight:600;letter-spacing:0.06em'>Safety Buffer</span><br>" +
-          (bufferOk
-            ? "<span style='color:#1D9E75;font-weight:700'>OK &mdash; above $" + data.safety_buffer.toLocaleString() + "</span>"
-            : "<span style='color:#D85A30;font-weight:700'>WARNING &mdash; below $" + data.safety_buffer.toLocaleString() + "</span>") +
-        "</div>" +
-      "</div>";
-
+    renderPayRun(data);
     showToast("Pay run calculated — " + data.recommended.length + " bills recommended.", "success");
   } catch (err) {
     showToast("Network error — " + err, "error");
@@ -269,6 +280,16 @@ document.getElementById("btn-export").addEventListener("click", () => {
   URL.revokeObjectURL(url);
   showToast("Pay run CSV exported.", "success");
 });
+
+(async function loadLatest() {
+  try {
+    const resp = await fetch("/pay-run/latest");
+    const data = await resp.json();
+    if (!data.ok) return;
+    document.getElementById("balance-input").value = data.entered_balance;
+    renderPayRun(data);
+  } catch (e) { /* page stays blank if no prior run */ }
+})();
 </script>
 
 </body>
