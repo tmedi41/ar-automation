@@ -263,9 +263,11 @@ btnGenerate.addEventListener("click", generateSummary);
 btnRedo.addEventListener("click", generateSummary);
 
 btnSave.addEventListener("click", async () => {
-  const customer = btnSave.dataset.customer || "";
-  const invoice  = btnSave.dataset.invoice  || "";
-  const summary  = btnSave.dataset.summary  || "";
+  const customer     = btnSave.dataset.customer || "";
+  const invoice      = btnSave.dataset.invoice  || "";
+  const summary      = btnSave.dataset.summary  || "";
+  const promiseDateEl = document.getElementById("reply-promise-date");
+  const promise_date  = promiseDateEl ? promiseDateEl.value.trim() : "";
 
   if (!invoice || !summary) return;
 
@@ -276,7 +278,7 @@ btnSave.addEventListener("click", async () => {
     const resp = await fetch("/log-reply", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ customer, invoice, summary }),
+      body:    JSON.stringify({ customer, invoice, summary, promise_date }),
     });
     const data = await resp.json();
 
@@ -290,6 +292,7 @@ btnSave.addEventListener("click", async () => {
       document.getElementById("reply-customer").value = "";
       document.getElementById("reply-invoice").value  = "";
       document.getElementById("reply-text").value     = "";
+      if (promiseDateEl) promiseDateEl.value = "";
     } else {
       showReplyStatus(data.error || "Failed to save.", "error");
     }

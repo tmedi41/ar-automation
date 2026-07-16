@@ -30,6 +30,7 @@
   <a href="{{ url_for('bills_queue') }}" class="nav-tab" style="text-decoration:none">Bills Queue</a>
   <a href="{{ url_for('pay_run') }}" class="nav-tab active" style="text-decoration:none">Pay Run</a>
   <a href="{{ url_for('pay_run_history') }}" class="nav-tab" style="text-decoration:none">Pay Run History</a>
+  <a href="{{ url_for('forecast') }}" class="nav-tab" style="text-decoration:none">Cash Flow Forecast</a>
 </nav>
 
 <main class="main">
@@ -281,12 +282,22 @@ document.getElementById("btn-export").addEventListener("click", () => {
   showToast("Pay run CSV exported.", "success");
 });
 
+// Pre-fill from most recent cash snapshot (server-rendered)
+(function prefill() {
+  const raw = {{ latest_balance_raw | default(0) }};
+  const inp = document.getElementById("balance-input");
+  if (raw > 0 && !inp.value) {
+    inp.value = "$" + raw.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+})();
+
 (async function loadLatest() {
   try {
     const resp = await fetch("/pay-run/latest");
     const data = await resp.json();
     if (!data.ok) return;
-    document.getElementById("balance-input").value = data.entered_balance;
+    // Restore last pay-run results but don't overwrite the balance input;
+    // the snapshot pre-fill above already has the most current balance.
     renderPayRun(data);
   } catch (e) { /* page stays blank if no prior run */ }
 })();
