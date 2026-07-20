@@ -148,6 +148,19 @@
           <div class="section-title">Upload AR Export</div>
         </div>
         <p class="upload-desc">Upload your QuickBooks AR Aging Detail CSV. This will replace <code>exports/ar_aging.csv</code>.</p>
+        {% if last_uploaded_at %}
+        <p style="font-size:12px;color:#888780;margin:-8px 0 12px">
+          Last uploaded {{ last_uploaded_at.strftime('%m/%d/%Y %I:%M %p') }}
+          {% if upload_delta is not none and upload_delta|abs > 0.005 %}
+            &middot;
+            <span style="font-weight:600;color:{{ '#D8862F' if upload_delta_pct is not none and upload_delta_pct|abs >= 0.15 else '#888780' }}">
+              {% if upload_delta > 0 %}&#8593;{% else %}&#8595;{% endif %}
+              ${{ "%.2f"|format(upload_delta|abs) }}
+            </span>
+            vs previous upload
+          {% endif %}
+        </p>
+        {% endif %}
 
         <div class="upload-zone" id="upload-zone">
           <div class="upload-icon">
@@ -196,6 +209,13 @@
             <label class="form-label" for="reply-invoice">Invoice Number</label>
             <input type="text" class="form-input" id="reply-invoice" placeholder="e.g. 136324 or 136324, 136325" />
           </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="reply-promise-date">
+            Promise Date <span style="font-weight:400;color:#888780">(optional — if customer gave a specific pay date)</span>
+          </label>
+          <input type="date" class="form-input" id="reply-promise-date" style="max-width:220px" />
         </div>
 
         <div class="form-group">

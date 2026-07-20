@@ -6,6 +6,7 @@ Reads reports/, database/, and data/ from the parent AR_Automation directory.
 Run:  python3 wsi_dashboard/app.py
 """
 
+import calendar
 import io
 import os
 import re
@@ -201,6 +202,28 @@ def init_db():
                     )
                 """)
 
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS cash_snapshots (
+                        id         SERIAL PRIMARY KEY,
+                        balance    NUMERIC(14, 2) NOT NULL,
+                        entered_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                # Idempotent: adds promise_date to existing deployments
+                cur.execute("""
+                    ALTER TABLE customer_interactions
+                    ADD COLUMN IF NOT EXISTS promise_date DATE
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS upload_log (
+                        id            SERIAL PRIMARY KEY,
+                        source        TEXT NOT NULL,
+                        uploaded_at   TIMESTAMP DEFAULT NOW(),
+                        record_count  INT NOT NULL DEFAULT 0,
+                        total_amount  NUMERIC(14, 2) NOT NULL DEFAULT 0
+                    )
+                """)
+
         # Restore ar_aging.csv from Postgres so automation scripts can find it
         with conn.cursor() as cur:
             cur.execute("SELECT content FROM stored_files WHERE key = 'ar_aging'")
@@ -212,6 +235,40 @@ def init_db():
                     fh.write(row[0])
     finally:
         conn.close()
+
+
+def _record_upload(source: str, record_count: int, total_amount: float, cur) -> None:
+    """Log an upload event so the UI can show a last-uploaded time + delta."""
+    cur.execute(
+        "INSERT INTO upload_log (source, record_count, total_amount) VALUES (%s, %s, %s)",
+        (source, record_count, total_amount),
+    )
+
+
+def _get_upload_meta(source: str) -> dict:
+    """Return the most recent upload's timestamp and its $ delta vs the prior upload."""
+    meta = {"last_uploaded_at": None, "upload_delta": None, "upload_delta_pct": None}
+    conn = get_db_conn()
+    if not conn:
+        return meta
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT uploaded_at, total_amount FROM upload_log "
+                "WHERE source = %s ORDER BY uploaded_at DESC LIMIT 2",
+                (source,),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    if rows:
+        meta["last_uploaded_at"] = rows[0][0]
+        if len(rows) > 1:
+            prev = float(rows[1][1])
+            meta["upload_delta"] = float(rows[0][1]) - prev
+            if prev:
+                meta["upload_delta_pct"] = meta["upload_delta"] / abs(prev)
+    return meta
 
 
 # ── Interactions data abstraction ─────────────────────────────────────────────
@@ -272,7 +329,35 @@ def _get_collections_log_df() -> pd.DataFrame:
     return _read_csv("database/collections_log.csv")
 
 
-def _append_interaction(date: str, customer: str, invoice: str, type_: str, notes: str):
+def _get_latest_balance():
+    """Return most recent balance from cash_snapshots, or None."""
+    conn = get_db_conn()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT balance FROM cash_snapshots ORDER BY entered_at DESC LIMIT 1")
+            row = cur.fetchone()
+            return float(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+def _save_balance_snapshot(balance: float) -> None:
+    """Insert a new timestamped balance row into cash_snapshots."""
+    conn = get_db_conn()
+    if not conn:
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO cash_snapshots (balance) VALUES (%s)", (balance,))
+    finally:
+        conn.close()
+
+
+def _append_interaction(date: str, customer: str, invoice: str, type_: str, notes: str,
+                        promise_date=None):
     """Insert a new interaction row into Postgres or the CSV fallback."""
     conn = get_db_conn()
     if conn:
@@ -280,9 +365,10 @@ def _append_interaction(date: str, customer: str, invoice: str, type_: str, note
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO customer_interactions (date, customer, invoice, type, notes) "
-                        "VALUES (%s, %s, %s, %s, %s)",
-                        (date, customer, invoice, type_, notes),
+                        "INSERT INTO customer_interactions "
+                        "(date, customer, invoice, type, notes, promise_date) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (date, customer, invoice, type_, notes, promise_date or None),
                     )
         finally:
             conn.close()
@@ -947,6 +1033,7 @@ def logout():
 def index():
     weekly_data = parse_weekly_report()
     weekly_data["past_due_accounts"] = enrich_last_updates(weekly_data["past_due_accounts"])
+    upload_meta = _get_upload_meta("ar")
     return render_template(
         "index.html",
         metrics=get_metrics(),
@@ -955,6 +1042,9 @@ def index():
         weekly_data=weekly_data,
         customer_replies=get_customer_replies(),
         payment_data=get_payment_history_data(),
+        last_uploaded_at=upload_meta["last_uploaded_at"],
+        upload_delta=upload_meta["upload_delta"],
+        upload_delta_pct=upload_meta["upload_delta_pct"],
     )
 
 
@@ -983,6 +1073,7 @@ def cash_position():
     sum_hit = sum(float(o["amount"]) for o in already_hit)
     sum_pending = sum(float(o["amount"]) for o in still_pending)
 
+    latest_bal = _get_latest_balance()
     return render_template(
         "cash_position.html",
         obligations=obligations,
@@ -993,6 +1084,8 @@ def cash_position():
         sum_pending=f"${sum_pending:,.2f}",
         current_day=current_day,
         current_month=today.strftime("%B %Y"),
+        latest_balance=f"${latest_bal:,.2f}" if latest_bal else "",
+        latest_balance_raw=latest_bal or 0.0,
     )
 
 
@@ -1005,6 +1098,8 @@ def cash_position_calculate():
         balance = float(balance_str)
     except (ValueError, TypeError):
         return jsonify({"ok": False, "error": "Please enter a valid dollar amount."})
+
+    _save_balance_snapshot(balance)
 
     obligations = []
     conn = get_db_conn()
@@ -1104,12 +1199,17 @@ def bills_queue():
         if b["days_overdue"] is not None and b["days_overdue"] > 0
     )
 
+    upload_meta = _get_upload_meta("bills")
+
     return render_template(
         "bills_queue.html",
         bills=bills,
         total_count=total_count,
         total_owed=f"${total_owed:,.2f}",
         total_overdue=f"${total_overdue:,.2f}",
+        last_uploaded_at=upload_meta["last_uploaded_at"],
+        upload_delta=upload_meta["upload_delta"],
+        upload_delta_pct=upload_meta["upload_delta_pct"],
     )
 
 
@@ -1218,6 +1318,7 @@ def bills_queue_upload():
                             row["status"],
                         ),
                     )
+                _record_upload("bills", len(df), float(df["open_balance"].sum()), cur)
     finally:
         conn.close()
 
@@ -1227,7 +1328,12 @@ def bills_queue_upload():
 @app.route("/pay-run")
 @_login_required
 def pay_run():
-    return render_template("pay_run.html")
+    latest_bal = _get_latest_balance()
+    return render_template(
+        "pay_run.html",
+        latest_balance=f"${latest_bal:,.2f}" if latest_bal else "",
+        latest_balance_raw=latest_bal or 0.0,
+    )
 
 
 SAFETY_BUFFER = 5000
@@ -1391,6 +1497,8 @@ def pay_run_calculate():
         balance = float(balance_str)
     except (ValueError, TypeError):
         return jsonify({"ok": False, "error": "Please enter a valid dollar amount."})
+
+    _save_balance_snapshot(balance)
 
     today = datetime.today().date()
     current_day = today.day
@@ -1599,6 +1707,15 @@ def upload_ar():
             df_clean = _process_ar_csv_content(content)
             if _db_write_clean_invoices(df_clean):
                 print(f"[INFO] clean_invoices table populated ({len(df_clean)} rows).")
+                total_balance = float(df_clean["Balance"].fillna(0).sum())
+                log_conn = get_db_conn()
+                if log_conn:
+                    try:
+                        with log_conn:
+                            with log_conn.cursor() as log_cur:
+                                _record_upload("ar", len(df_clean), total_balance, log_cur)
+                    finally:
+                        log_conn.close()
             else:
                 print("[WARN] clean_invoices write returned False — check DATABASE_URL.")
         except Exception as _proc_err:
@@ -1650,12 +1767,20 @@ def summarize_reply():
 @app.route("/log-reply", methods=["POST"])
 @_login_required
 def log_reply():
-    data     = request.get_json()
-    invoices = (data.get("invoice")  or "").strip()
-    customer = (data.get("customer") or "").strip()
-    summary  = (data.get("summary")  or "").strip()
+    data         = request.get_json()
+    invoices     = (data.get("invoice")      or "").strip()
+    customer     = (data.get("customer")     or "").strip()
+    summary      = (data.get("summary")      or "").strip()
+    promise_date = (data.get("promise_date") or "").strip() or None
     if not invoices or not summary:
         return jsonify({"ok": False, "error": "Invoice and summary are required."})
+
+    # Validate promise_date if provided
+    if promise_date:
+        try:
+            datetime.strptime(promise_date, "%Y-%m-%d")
+        except ValueError:
+            promise_date = None
 
     today        = datetime.today().strftime("%Y-%m-%d")
     invoice_list = [inv.strip() for inv in invoices.split(",") if inv.strip()]
@@ -1686,7 +1811,7 @@ def log_reply():
         bal = inv_balance_map.get(inv, 0.0)
         if bal > 0:
             inv_summary = f"{summary} \u2014 ${bal:,.2f}"
-        _append_interaction(today, customer, inv, "Customer Reply", inv_summary)
+        _append_interaction(today, customer, inv, "Customer Reply", inv_summary, promise_date)
     return jsonify({"ok": True, "logged": len(invoice_list)})
 
 
@@ -2144,6 +2269,213 @@ def scan_inbox():
         "skipped":         skipped,
         "skipped_filtered": skipped_filtered,
         "items":           logged,
+    })
+
+
+# ── Cash Flow Forecast ────────────────────────────────────────────────────────
+
+@app.route("/forecast")
+@_login_required
+def forecast():
+    latest_bal = _get_latest_balance()
+    return render_template(
+        "forecast.html",
+        latest_balance=f"${latest_bal:,.2f}" if latest_bal else "",
+        latest_balance_raw=latest_bal or 0.0,
+    )
+
+
+@app.route("/forecast/calculate", methods=["POST"])
+@_login_required
+def forecast_calculate():
+    data = request.get_json()
+    balance_str = (data.get("balance") or "").strip().replace("$", "").replace(",", "")
+    try:
+        starting_balance = float(balance_str)
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "Please enter a valid dollar amount."})
+
+    _save_balance_snapshot(starting_balance)
+
+    today = datetime.today().date()
+    end_date = today + timedelta(days=30)
+
+    invoices = []
+    bills = []
+    obligations = []
+
+    conn = get_db_conn()
+    if conn:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # AR: each open invoice with its most recent promise_date
+                cur.execute("""
+                    SELECT
+                        ci.invoice,
+                        ci.customer,
+                        ci.balance,
+                        ci.due_date,
+                        (
+                            SELECT cx.promise_date
+                            FROM customer_interactions cx
+                            WHERE cx.invoice = ci.invoice
+                              AND cx.promise_date IS NOT NULL
+                            ORDER BY cx.created_at DESC
+                            LIMIT 1
+                        ) AS promise_date
+                    FROM clean_invoices ci
+                    WHERE ci.balance > 0
+                """)
+                invoices = cur.fetchall()
+
+                # AP: open vendor bills
+                cur.execute(
+                    "SELECT vendor_name, due_date, open_balance "
+                    "FROM bills WHERE open_balance > 0"
+                )
+                bills = cur.fetchall()
+
+                # Recurring monthly obligations
+                cur.execute(
+                    "SELECT vendor_name, amount, typical_day_of_month "
+                    "FROM recurring_obligations WHERE is_active = TRUE"
+                )
+                obligations = cur.fetchall()
+        finally:
+            conn.close()
+
+    # Build 5 weekly buckets covering today → today+30
+    weeks = []
+    for i in range(5):
+        w_start = today + timedelta(days=i * 7)
+        w_end   = min(today + timedelta(days=i * 7 + 6), end_date)
+        if w_start > end_date:
+            break
+        weeks.append({
+            "label":            f"{w_start.strftime('%b %d')} – {w_end.strftime('%b %d')}",
+            "start":            w_start,
+            "end":              w_end,
+            "confirmed_inflow": 0.0,
+            "atrisk_inflow":    0.0,
+            "ap_outflow":       0.0,
+            "outflow_items":    [],
+        })
+
+    def _week_idx(d):
+        if d is None:
+            return None
+        offset = (d - today).days
+        if offset > 30:
+            return None
+        return min(max(offset, 0) // 7, len(weeks) - 1)
+
+    # Classify AR inflows
+    for inv in invoices:
+        bal = float(inv["balance"] or 0)
+        if bal <= 0:
+            continue
+        due_date = None
+        if inv["due_date"]:
+            try:
+                due_date = datetime.strptime(inv["due_date"], "%m/%d/%Y").date()
+            except ValueError:
+                pass
+        promise_date = inv["promise_date"]  # date object or None from Postgres
+        expected_date = promise_date if promise_date else due_date
+        if expected_date is None:
+            continue
+
+        wi = _week_idx(expected_date)
+        if wi is None:
+            continue
+        if expected_date >= today:
+            weeks[wi]["confirmed_inflow"] += bal
+        else:
+            # Past expected date but still unpaid → at-risk; land in current week
+            weeks[wi]["atrisk_inflow"] += bal
+
+    # AP: bills due in window (overdue bills land in week 0)
+    for b in bills:
+        amt = float(b["open_balance"] or 0)
+        if amt <= 0:
+            continue
+        dd = b["due_date"]
+        wi = _week_idx(dd) if dd else None
+        if wi is None:
+            if dd and dd < today:
+                wi = 0  # overdue → current week
+            else:
+                continue
+        weeks[wi]["ap_outflow"] += amt
+        weeks[wi]["outflow_items"].append({
+            "label": b["vendor_name"],
+            "amount": amt,
+            "type": "bill",
+        })
+
+    # AP: recurring obligations projected into the 30-day window
+    check = today
+    while check <= end_date:
+        for o in obligations:
+            day = o["typical_day_of_month"]
+            last_day_of_month = calendar.monthrange(check.year, check.month)[1]
+            hit_day = min(day, last_day_of_month)
+            if check.day == hit_day:
+                wi = _week_idx(check)
+                if wi is not None:
+                    amt = float(o["amount"])
+                    weeks[wi]["ap_outflow"] += amt
+                    weeks[wi]["outflow_items"].append({
+                        "label": o["vendor_name"],
+                        "amount": amt,
+                        "type": "recurring",
+                    })
+        check += timedelta(days=1)
+
+    # Build running balances
+    running_confirmed    = starting_balance
+    running_with_atrisk  = starting_balance
+    any_hard_flag = False
+    any_soft_flag = False
+    rows = []
+    for w in weeks:
+        running_confirmed   += w["confirmed_inflow"]   - w["ap_outflow"]
+        running_with_atrisk += w["confirmed_inflow"] + w["atrisk_inflow"] - w["ap_outflow"]
+
+        hard_flag = running_confirmed   < SAFETY_BUFFER
+        soft_flag = (not hard_flag) and running_with_atrisk < SAFETY_BUFFER
+        if hard_flag:
+            any_hard_flag = True
+        if soft_flag:
+            any_soft_flag = True
+
+        rows.append({
+            "week":                 w["label"],
+            "confirmed_inflow":     f"${w['confirmed_inflow']:,.2f}",
+            "atrisk_inflow":        f"${w['atrisk_inflow']:,.2f}",
+            "ap_outflow":           f"${w['ap_outflow']:,.2f}",
+            "balance_confirmed":    f"${running_confirmed:,.2f}",
+            "balance_with_atrisk":  f"${running_with_atrisk:,.2f}",
+            "balance_confirmed_raw":   running_confirmed,
+            "balance_atrisk_raw":      running_with_atrisk,
+            "hard_flag":            hard_flag,
+            "soft_flag":            soft_flag,
+        })
+
+    total_confirmed   = sum(w["confirmed_inflow"] for w in weeks)
+    total_atrisk      = sum(w["atrisk_inflow"]    for w in weeks)
+    total_ap          = sum(w["ap_outflow"]        for w in weeks)
+
+    return jsonify({
+        "ok":                True,
+        "starting_balance":  f"${starting_balance:,.2f}",
+        "total_confirmed_ar": f"${total_confirmed:,.2f}",
+        "total_atrisk_ar":    f"${total_atrisk:,.2f}",
+        "total_ap_outflow":   f"${total_ap:,.2f}",
+        "safety_buffer":      SAFETY_BUFFER,
+        "any_hard_flag":      any_hard_flag,
+        "any_soft_flag":      any_soft_flag,
+        "rows":               rows,
     })
 
 

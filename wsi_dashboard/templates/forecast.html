@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cash Flow Forecast &mdash; Working Solutions</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header class="page-header">
+  <div class="header-left">
+    <div class="header-title">Cash Flow Forecast</div>
+    <div class="header-sub">Working Solutions Inc. &mdash; 30-day projection</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="{{ url_for('index') }}" class="btn-run" style="text-decoration:none">
+      &larr; AR Dashboard
+    </a>
+    <form method="POST" action="{{ url_for('logout') }}" style="margin:0">
+      <button type="submit" class="btn-logout">Log out</button>
+    </form>
+  </div>
+</header>
+
+<nav class="nav-tabs">
+  <a href="{{ url_for('ap_dashboard') }}"   class="nav-tab" style="text-decoration:none">Overview</a>
+  <a href="{{ url_for('cash_position') }}"  class="nav-tab" style="text-decoration:none">Cash Position</a>
+  <a href="{{ url_for('bills_queue') }}"    class="nav-tab" style="text-decoration:none">Bills Queue</a>
+  <a href="{{ url_for('pay_run') }}"        class="nav-tab" style="text-decoration:none">Pay Run</a>
+  <a href="{{ url_for('pay_run_history') }}" class="nav-tab" style="text-decoration:none">Pay Run History</a>
+  <a href="{{ url_for('forecast') }}"       class="nav-tab active" style="text-decoration:none">Cash Flow Forecast</a>
+</nav>
+
+<main class="main">
+
+  <!-- ── Balance Input ───────────────────────────────────────────────────── -->
+  <div class="card" style="max-width:480px;margin-bottom:24px">
+    <div class="card-header">
+      <div class="section-title">BancFirst Checking Balance</div>
+    </div>
+    <div style="display:flex;gap:12px;align-items:flex-end">
+      <div class="form-group" style="flex:1;margin-bottom:0">
+        <label class="form-label" for="balance-input">Current Balance</label>
+        <input type="text" id="balance-input" class="form-input"
+               placeholder="$0.00" inputmode="decimal" />
+      </div>
+      <button class="btn-primary" id="btn-forecast" style="height:42px;white-space:nowrap">
+        Generate Forecast
+      </button>
+    </div>
+    <div style="margin-top:8px;font-size:12px;color:#888780">
+      Forecast uses invoice due dates as expected collection dates.
+      Set a promise date on any invoice reply to override.
+    </div>
+  </div>
+
+  <!-- ── Alert Banner (shown when flags are present) ─────────────────────── -->
+  <div id="alert-hard" style="display:none;background:#fdf2ee;border:1px solid #D85A30;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#D85A30;font-weight:600;font-size:14px">
+    &#9888; Cash Warning: balance projected below $5,000 safety buffer even with only confirmed AR inflows.
+    Review AP outflows or accelerate collections.
+  </div>
+  <div id="alert-soft" style="display:none;background:#fffbf0;border:1px solid #e6b94b;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#9a7a1e;font-weight:600;font-size:14px">
+    &#9888; Cash Watch: balance stays above buffer using confirmed AR, but dips below if at-risk AR is excluded.
+    Follow up on past-due invoices to shore up the position.
+  </div>
+
+  <!-- ── Summary Cards ───────────────────────────────────────────────────── -->
+  <div class="metrics-grid" id="summary-cards" style="display:none;grid-template-columns:repeat(4,1fr)">
+    <div class="metric-card">
+      <div class="metric-label">Starting Balance</div>
+      <div class="metric-value" id="mc-balance">&mdash;</div>
+      <div class="metric-sub">BancFirst checking</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Confirmed AR (30d)</div>
+      <div class="metric-value payments-value" id="mc-confirmed">&mdash;</div>
+      <div class="metric-sub">Invoices not yet overdue</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">At-Risk AR (30d)</div>
+      <div class="metric-value" id="mc-atrisk" style="color:#888780">&mdash;</div>
+      <div class="metric-sub">Past due / missed promise</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">AP Outflows (30d)</div>
+      <div class="metric-value" id="mc-ap" style="color:#D85A30">&mdash;</div>
+      <div class="metric-sub">Bills &amp; recurring</div>
+    </div>
+  </div>
+
+  <!-- ── Forecast Table ──────────────────────────────────────────────────── -->
+  <div class="card" id="card-forecast" style="display:none">
+    <div class="card-header">
+      <div class="section-title">Weekly Cash Projection</div>
+      <span style="font-size:12px;color:#888780">Safety buffer: $5,000</span>
+    </div>
+
+    <!-- Legend -->
+    <div style="display:flex;gap:20px;padding:0 0 12px;font-size:12px;color:#888780">
+      <span>
+        <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#1D9E75;margin-right:4px;vertical-align:middle"></span>
+        Confirmed balance (invoices on track)
+      </span>
+      <span>
+        <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#888780;margin-right:4px;vertical-align:middle"></span>
+        Balance with at-risk AR included
+      </span>
+      <span>
+        <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#D85A30;margin-right:4px;vertical-align:middle"></span>
+        Below $5,000 safety buffer
+      </span>
+    </div>
+
+    <table class="ph-payments-table">
+      <thead>
+        <tr>
+          <th>Week</th>
+          <th class="ph-amount-col">Confirmed AR In</th>
+          <th class="ph-amount-col">At-Risk AR In</th>
+          <th class="ph-amount-col">AP Out</th>
+          <th class="ph-amount-col">Balance (Confirmed)</th>
+          <th class="ph-amount-col">Balance (w/ At-Risk)</th>
+          <th style="width:32px"></th>
+        </tr>
+      </thead>
+      <tbody id="forecast-tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- ── Methodology Note ────────────────────────────────────────────────── -->
+  <div id="card-notes" class="card" style="display:none;background:#f9f9f8">
+    <div class="card-header">
+      <div class="section-title" style="font-size:13px;color:#888780">How the forecast works</div>
+    </div>
+    <ul style="font-size:12px;color:#888780;line-height:1.8;margin:0;padding-left:20px">
+      <li><strong>Confirmed AR</strong>: open invoices whose expected collection date (promise date if set, otherwise due date) is today or in the future.</li>
+      <li><strong>At-Risk AR</strong>: open invoices already past their expected collection date but not yet received.</li>
+      <li><strong>AP Outflows</strong>: open vendor bills due in the 30-day window plus recurring monthly obligations projected from today.</li>
+      <li>Hard flag (orange) fires when the confirmed-only balance dips below $5,000. Soft flag (yellow) fires when the at-risk scenario causes the dip but confirmed-only stays above buffer.</li>
+      <li>100% collection is not assumed for at-risk invoices &mdash; use the two balance columns to bracket the realistic range.</li>
+    </ul>
+  </div>
+
+</main>
+
+<!-- ── Toast ──────────────────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script>
+const toast = document.getElementById("toast");
+let toastTimer = null;
+function showToast(msg, type) {
+  toast.textContent = msg;
+  toast.className = "show " + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.className = ""; }, 4000);
+}
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function fmtFlag(row) {
+  if (row.hard_flag) {
+    return "<span title='Balance below $5,000 on confirmed AR only' style='color:#D85A30;font-size:16px;font-weight:700'>&#9888;</span>";
+  }
+  if (row.soft_flag) {
+    return "<span title='Balance below $5,000 only when at-risk AR is excluded' style='color:#e6b94b;font-size:16px;font-weight:700'>&#9888;</span>";
+  }
+  return "";
+}
+
+document.getElementById("btn-forecast").addEventListener("click", async () => {
+  const val = document.getElementById("balance-input").value.trim();
+  if (!val) { showToast("Enter a balance first.", "error"); return; }
+
+  const btn = document.getElementById("btn-forecast");
+  btn.disabled = true;
+  btn.textContent = "Generating…";
+
+  try {
+    const resp = await fetch("/forecast/calculate", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ balance: val }),
+    });
+    const data = await resp.json();
+    if (!data.ok) { showToast(data.error || "Forecast failed.", "error"); return; }
+
+    // Alerts
+    document.getElementById("alert-hard").style.display = data.any_hard_flag ? "" : "none";
+    document.getElementById("alert-soft").style.display = (!data.any_hard_flag && data.any_soft_flag) ? "" : "none";
+
+    // Summary cards
+    document.getElementById("summary-cards").style.display = "";
+    document.getElementById("mc-balance").textContent   = data.starting_balance;
+    document.getElementById("mc-confirmed").textContent = data.total_confirmed_ar;
+    document.getElementById("mc-atrisk").textContent    = data.total_atrisk_ar;
+    document.getElementById("mc-ap").textContent        = data.total_ap_outflow;
+
+    // Table
+    const SAFETY = data.safety_buffer;
+    document.getElementById("forecast-tbody").innerHTML = data.rows.map(row => {
+      const confRaw  = row.balance_confirmed_raw;
+      const ariskRaw = row.balance_atrisk_raw;
+      const confColor  = confRaw  < SAFETY ? "color:#D85A30;font-weight:700"
+                       : confRaw  < SAFETY * 2 ? "color:#e6b94b;font-weight:600"
+                       : "color:#1D9E75;font-weight:600";
+      const ariskColor = ariskRaw < SAFETY ? "color:#D85A30;font-weight:700"
+                       : ariskRaw < SAFETY * 2 ? "color:#e6b94b;font-weight:600"
+                       : "color:#888780";
+      return "<tr>" +
+        "<td class='ph-customer'>" + esc(row.week) + "</td>" +
+        "<td class='ph-amount' style='color:#1D9E75'>" + esc(row.confirmed_inflow) + "</td>" +
+        "<td class='ph-amount' style='color:#888780'>" + esc(row.atrisk_inflow) + "</td>" +
+        "<td class='ph-amount' style='color:#D85A30'>" + esc(row.ap_outflow) + "</td>" +
+        "<td class='ph-amount' style='" + confColor  + "'>" + esc(row.balance_confirmed)   + "</td>" +
+        "<td class='ph-amount' style='" + ariskColor + "'>" + esc(row.balance_with_atrisk) + "</td>" +
+        "<td style='text-align:center'>" + fmtFlag(row) + "</td>" +
+      "</tr>";
+    }).join("");
+
+    document.getElementById("card-forecast").style.display = "";
+    document.getElementById("card-notes").style.display    = "";
+    showToast("Forecast generated.", "success");
+  } catch (err) {
+    showToast("Network error — " + err, "error");
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = "Generate Forecast";
+  }
+});
+
+document.getElementById("balance-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("btn-forecast").click();
+});
+
+// Pre-fill from most recent cash snapshot
+(function prefill() {
+  const raw = {{ latest_balance_raw | default(0) }};
+  const inp = document.getElementById("balance-input");
+  if (raw > 0 && !inp.value) {
+    inp.value = "$" + raw.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+})();
+</script>
+
+</body>
+</html>

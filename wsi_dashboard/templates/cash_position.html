@@ -30,6 +30,7 @@
   <a href="{{ url_for('bills_queue') }}" class="nav-tab" style="text-decoration:none">Bills Queue</a>
   <a href="{{ url_for('pay_run') }}" class="nav-tab" style="text-decoration:none">Pay Run</a>
   <a href="{{ url_for('pay_run_history') }}" class="nav-tab" style="text-decoration:none">Pay Run History</a>
+  <a href="{{ url_for('forecast') }}" class="nav-tab" style="text-decoration:none">Cash Flow Forecast</a>
 </nav>
 
 <main class="main">
@@ -198,6 +199,15 @@ document.getElementById("btn-calculate").addEventListener("click", async () => {
 document.getElementById("balance-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("btn-calculate").click();
 });
+
+// Pre-fill from most recent cash snapshot
+(function prefill() {
+  const raw = {{ latest_balance_raw | default(0) }};
+  const inp = document.getElementById("balance-input");
+  if (raw > 0 && !inp.value) {
+    inp.value = "$" + raw.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+})();
 </script>
 
 </body>
