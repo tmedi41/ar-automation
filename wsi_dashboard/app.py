@@ -214,6 +214,15 @@ def init_db():
                     ALTER TABLE customer_interactions
                     ADD COLUMN IF NOT EXISTS promise_date DATE
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS upload_log (
+                        id            SERIAL PRIMARY KEY,
+                        source        TEXT NOT NULL,
+                        uploaded_at   TIMESTAMP DEFAULT NOW(),
+                        record_count  INT NOT NULL DEFAULT 0,
+                        total_amount  NUMERIC(14, 2) NOT NULL DEFAULT 0
+                    )
+                """)
 
         # Restore ar_aging.csv from Postgres so automation scripts can find it
         with conn.cursor() as cur:
@@ -226,6 +235,40 @@ def init_db():
                     fh.write(row[0])
     finally:
         conn.close()
+
+
+def _record_upload(source: str, record_count: int, total_amount: float, cur) -> None:
+    """Log an upload event so the UI can show a last-uploaded time + delta."""
+    cur.execute(
+        "INSERT INTO upload_log (source, record_count, total_amount) VALUES (%s, %s, %s)",
+        (source, record_count, total_amount),
+    )
+
+
+def _get_upload_meta(source: str) -> dict:
+    """Return the most recent upload's timestamp and its $ delta vs the prior upload."""
+    meta = {"last_uploaded_at": None, "upload_delta": None, "upload_delta_pct": None}
+    conn = get_db_conn()
+    if not conn:
+        return meta
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT uploaded_at, total_amount FROM upload_log "
+                "WHERE source = %s ORDER BY uploaded_at DESC LIMIT 2",
+                (source,),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    if rows:
+        meta["last_uploaded_at"] = rows[0][0]
+        if len(rows) > 1:
+            prev = float(rows[1][1])
+            meta["upload_delta"] = float(rows[0][1]) - prev
+            if prev:
+                meta["upload_delta_pct"] = meta["upload_delta"] / abs(prev)
+    return meta
 
 
 # ── Interactions data abstraction ─────────────────────────────────────────────
@@ -990,6 +1033,7 @@ def logout():
 def index():
     weekly_data = parse_weekly_report()
     weekly_data["past_due_accounts"] = enrich_last_updates(weekly_data["past_due_accounts"])
+    upload_meta = _get_upload_meta("ar")
     return render_template(
         "index.html",
         metrics=get_metrics(),
@@ -998,6 +1042,9 @@ def index():
         weekly_data=weekly_data,
         customer_replies=get_customer_replies(),
         payment_data=get_payment_history_data(),
+        last_uploaded_at=upload_meta["last_uploaded_at"],
+        upload_delta=upload_meta["upload_delta"],
+        upload_delta_pct=upload_meta["upload_delta_pct"],
     )
 
 
@@ -1152,12 +1199,17 @@ def bills_queue():
         if b["days_overdue"] is not None and b["days_overdue"] > 0
     )
 
+    upload_meta = _get_upload_meta("bills")
+
     return render_template(
         "bills_queue.html",
         bills=bills,
         total_count=total_count,
         total_owed=f"${total_owed:,.2f}",
         total_overdue=f"${total_overdue:,.2f}",
+        last_uploaded_at=upload_meta["last_uploaded_at"],
+        upload_delta=upload_meta["upload_delta"],
+        upload_delta_pct=upload_meta["upload_delta_pct"],
     )
 
 
@@ -1266,6 +1318,7 @@ def bills_queue_upload():
                             row["status"],
                         ),
                     )
+                _record_upload("bills", len(df), float(df["open_balance"].sum()), cur)
     finally:
         conn.close()
 
@@ -1654,6 +1707,15 @@ def upload_ar():
             df_clean = _process_ar_csv_content(content)
             if _db_write_clean_invoices(df_clean):
                 print(f"[INFO] clean_invoices table populated ({len(df_clean)} rows).")
+                total_balance = float(df_clean["Balance"].fillna(0).sum())
+                log_conn = get_db_conn()
+                if log_conn:
+                    try:
+                        with log_conn:
+                            with log_conn.cursor() as log_cur:
+                                _record_upload("ar", len(df_clean), total_balance, log_cur)
+                    finally:
+                        log_conn.close()
             else:
                 print("[WARN] clean_invoices write returned False — check DATABASE_URL.")
         except Exception as _proc_err:
