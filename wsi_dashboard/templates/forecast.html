@@ -122,7 +122,6 @@
           <th class="ph-amount-col">AP Out</th>
           <th class="ph-amount-col">Balance (Confirmed)</th>
           <th class="ph-amount-col">Balance (w/ At-Risk)</th>
-          <th style="width:32px"></th>
         </tr>
       </thead>
       <tbody id="forecast-tbody"></tbody>
@@ -164,12 +163,16 @@ function esc(s) {
   return d.innerHTML;
 }
 
-function fmtFlag(row) {
+function fmtHardFlag(row) {
   if (row.hard_flag) {
-    return "<span title='Balance below $5,000 on confirmed AR only' style='color:#D85A30;font-size:16px;font-weight:700'>&#9888;</span>";
+    return " <span title='Balance below $5,000 on confirmed AR only' style='color:#D85A30;font-size:16px;font-weight:700'>&#9888;</span>";
   }
+  return "";
+}
+
+function fmtSoftFlag(row) {
   if (row.soft_flag) {
-    return "<span title='Balance below $5,000 only when at-risk AR is excluded' style='color:#e6b94b;font-size:16px;font-weight:700'>&#9888;</span>";
+    return " <span title='Balance below $5,000 only when at-risk AR is excluded' style='color:#e6b94b;font-size:16px;font-weight:700'>&#9888;</span>";
   }
   return "";
 }
@@ -218,9 +221,8 @@ document.getElementById("btn-forecast").addEventListener("click", async () => {
         "<td class='ph-amount' style='color:#1D9E75'>" + esc(row.confirmed_inflow) + "</td>" +
         "<td class='ph-amount' style='color:#888780'>" + esc(row.atrisk_inflow) + "</td>" +
         "<td class='ph-amount' style='color:#D85A30'>" + esc(row.ap_outflow) + "</td>" +
-        "<td class='ph-amount' style='" + confColor  + "'>" + esc(row.balance_confirmed)   + "</td>" +
-        "<td class='ph-amount' style='" + ariskColor + "'>" + esc(row.balance_with_atrisk) + "</td>" +
-        "<td style='text-align:center'>" + fmtFlag(row) + "</td>" +
+        "<td class='ph-amount' style='" + confColor  + "'>" + esc(row.balance_confirmed)   + fmtHardFlag(row) + "</td>" +
+        "<td class='ph-amount' style='" + ariskColor + "'>" + esc(row.balance_with_atrisk) + fmtSoftFlag(row) + "</td>" +
       "</tr>";
     }).join("");
 
